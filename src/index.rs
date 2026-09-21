@@ -282,36 +282,54 @@ fn load(store: &Path) -> Option<HashMap<String, CachedFile>> {
 }
 
 fn walk(root: &Path) -> Walked {
-    let mut walked: Walked = ignore::WalkBuilder::new(root)
+    // Every call looks at the tree before it answers, so looking has to be
+    // cheap: directories are read side by side, and a file is asked for its
+    // size and time only once its name says it is source -- on Windows that
+    // question opens the file.
+    let found = std::sync::Mutex::new(Walked::new());
+    ignore::WalkBuilder::new(root)
         .add_custom_ignore_filename(".omegaignore")
         // A .gitignore says what is not source whether or not the tree has
         // been `git init`ed yet.
         .require_git(false)
-        .build()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
-        .filter_map(|entry| {
-            let meta = entry.metadata().ok()?;
-            if meta.len() > MAX_FILE_BYTES {
-                return None;
-            }
-            let path = entry.into_path();
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            if is_junk(relative) {
-                return None;
-            }
-            let kind = kind_of(relative)?;
-            let stamp = Stamp {
-                modified: meta
-                    .modified()
-                    .ok()
-                    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|since| (since.as_secs(), since.subsec_nanos())),
-                bytes: meta.len(),
-            };
-            Some((relative.to_string_lossy().replace('\\', "/"), path, kind, stamp))
-        })
-        .collect();
+        .build_parallel()
+        .run(|| {
+            Box::new(|entry| {
+                let Ok(entry) = entry else {
+                    return ignore::WalkState::Continue;
+                };
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    return ignore::WalkState::Continue;
+                }
+                let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
+                if is_junk(relative) {
+                    return ignore::WalkState::Continue;
+                }
+                let Some(kind) = kind_of(relative) else {
+                    return ignore::WalkState::Continue;
+                };
+                let Ok(meta) = entry.metadata() else {
+                    return ignore::WalkState::Continue;
+                };
+                if meta.len() > MAX_FILE_BYTES {
+                    return ignore::WalkState::Continue;
+                }
+                let stamp = Stamp {
+                    modified: meta
+                        .modified()
+                        .ok()
+                        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|since| (since.as_secs(), since.subsec_nanos())),
+                    bytes: meta.len(),
+                };
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if let Ok(mut found) = found.lock() {
+                    found.push((relative, entry.into_path(), kind, stamp));
+                }
+                ignore::WalkState::Continue
+            })
+        });
+    let mut walked = found.into_inner().unwrap_or_default();
     walked.sort_by(|a, b| a.0.cmp(&b.0));
     walked
 }

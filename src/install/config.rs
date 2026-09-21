@@ -102,7 +102,7 @@ pub fn remove_json(path: &Path, section: &str, key: &str) -> Action {
     }
 }
 
-fn is_hollow(value: &Value) -> bool {
+pub(crate) fn is_hollow(value: &Value) -> bool {
     value
         .as_object()
         .is_some_and(|object| object.values().all(is_hollow))

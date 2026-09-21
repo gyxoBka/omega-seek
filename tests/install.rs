@@ -201,3 +201,42 @@ fn the_instructions_are_short_and_say_what_they_must() {
     assert!(!block.contains(EXE) && !block.contains("{exe}"), "the instructions name a path");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// Another tool's installer leaves `{"mcpServers": {}}` in directories it made
+/// for agents nobody installed; that is not an agent to offer by default.
+#[test]
+fn a_real_config_or_a_filled_in_stub_is_an_installed_agent() {
+    let home = scratch("stubs");
+    put(&home.join(".kiro/settings/mcp.json"), "{\n  \"mcpServers\": {}\n}\n");
+    put(&home.join(".gemini/settings.json"), "{\n  \"mcpServers\": {}\n}\n");
+    put(&home.join(".gemini/antigravity/mcp_config.json"), "{ \"mcpServers\": {} }");
+    put(&home.join(".codex/config.toml"), "model = \"o\"\n");
+    put(&home.join(".cursor/mcp.json"), "{\"mcpServers\": {\"other\": {\"command\": \"x\"}}}");
+    let all = agents(&Dirs::under(&home));
+    let detected = |id: &str| all.iter().find(|agent| agent.id == id).unwrap().detected();
+    // A real config, or a stub that somebody has since filled in, counts.
+    assert!(detected("codex"));
+    assert!(detected("cursor"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn hollow_directories_are_told_from_lived_in_ones() {
+    let home = scratch("hollow");
+    put(&home.join(".kiro/settings/mcp.json"), "{\n  \"mcpServers\": {}\n}\n");
+    let all = agents(&Dirs::under(&home));
+    let kiro = all.iter().find(|agent| agent.id == "kiro").unwrap();
+    if !kiro_on_path() {
+        assert!(!kiro.detected(), "a directory of empty stubs was taken for an installed agent");
+        // Once it holds anything real, it is one.
+        put(&home.join(".kiro/steering/notes.md"), "# mine\n");
+        assert!(kiro.detected());
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+fn kiro_on_path() -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| ["kiro", "kiro.exe", "kiro.cmd"].iter().any(|name| dir.join(name).is_file()))
+    })
+}

@@ -73,6 +73,8 @@ pub struct Request {
     pub agents: Option<Vec<String>>,
     pub integrations: Option<Vec<Integration>>,
     pub yes: bool,
+    /// Show the plan and write nothing.
+    pub dry_run: bool,
 }
 
 pub fn run(mode: Mode, request: Request) -> Result<(), String> {
@@ -98,7 +100,7 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
             known.iter().filter(|agent| ids.iter().any(|id| id == agent.id)).collect()
         }
         // `--yes` asks nothing: what would have been ticked is what is chosen.
-        None if request.yes => known.iter().filter(|agent| agent.detected()).collect(),
+        None if request.yes || request.dry_run => known.iter().filter(|agent| agent.detected()).collect(),
         None => {
             // Detected agents first, and ticked.
             let mut order: Vec<&Agent> = known.iter().collect();
@@ -122,7 +124,7 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
 
     let integrations: Vec<Integration> = match &request.integrations {
         Some(integrations) => integrations.clone(),
-        None if request.yes => Integration::ALL.to_vec(),
+        None if request.yes || request.dry_run => Integration::ALL.to_vec(),
         None => {
             let labels = Integration::ALL
                 .iter()
@@ -143,6 +145,11 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
             }
         }
         println!();
+    }
+    if request.dry_run {
+        println!("  Dry run: nothing was written.
+");
+        return Ok(());
     }
     if !request.yes {
         let proceed = inquire::Confirm::new("Proceed?")

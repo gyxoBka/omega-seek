@@ -88,8 +88,34 @@ pub struct Agent {
 impl Agent {
     #[must_use]
     pub fn detected(&self) -> bool {
-        self.binary.is_some_and(on_path) || self.config_dir.as_deref().is_some_and(Path::exists)
+        self.binary.is_some_and(on_path) || self.config_dir.as_deref().is_some_and(is_lived_in)
     }
+}
+
+/// Whether a config directory belongs to an agent somebody uses. Installers of
+/// other tools register themselves with every agent they know of and leave
+/// `{"mcpServers": {}}` behind in directories they created; a directory that
+/// holds nothing but such hollow stubs is not an installed agent.
+fn is_lived_in(dir: &Path) -> bool {
+    const MAX_DEPTH: usize = 3;
+    fn any_real_file(dir: &Path, depth: usize) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                return depth < MAX_DEPTH && any_real_file(&path, depth + 1);
+            }
+            let hollow_stub = path.extension().is_some_and(|extension| extension == "json")
+                && std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                    .is_some_and(|value| super::config::is_hollow(&value));
+            !hollow_stub
+        })
+    }
+    any_real_file(dir, 0)
 }
 
 fn on_path(binary: &str) -> bool {

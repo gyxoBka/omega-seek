@@ -1,0 +1,50 @@
+decide where on this machine saved search data should live depending on windows mac or linux	src/semble/cache.py	def resolve_cache_folder(
+decide whether a previously stored snapshot of a project can be reused or the files changed since	src/semble/cache.py	def get_validated_cache(
+read back earlier results so only edited files get processed again, rejecting corrupt state	src/semble/cache.py	def load_previous_for_incremental(
+cut the text of one file into pieces and work out which rows each piece covers	src/semble/chunking/chunking.py	def chunk_source(
+walk the parsed syntax tree packing sibling elements together up to a size limit and descending into ones that are too big	src/semble/chunking/core.py	def _merge_node_inner(
+break text row by row into roughly equal sized blocks when no grammar is available	src/semble/chunking/core.py	def chunk_lines(
+clean up stored data belonging to projects that were deleted from disk	src/semble/cli.py	def _clear_orphans(
+make warnings show up in the terminal without adding the same output hook twice	src/semble/cli.py	def _configure_cli_logging(
+define the terminal commands with their flags and dispatch to the right action	src/semble/cli.py	def _cli_main(
+compute keyword relevance of every entry for a list of query words using word rarity and entry size	src/semble/index/bm25.py	def get_scores(
+take one entry out of the keyword lookup table and drop words nobody uses anymore	src/semble/index/bm25.py	def remove_document(
+read the keyword lookup table back from a file and reconstruct its word-to-entry map	src/semble/index/bm25.py	def load(cls, path: Path) -> "BM25"
+go through every file in a folder, split and vectorize it, skipping work for files untouched since last time	src/semble/index/create.py	def create_index_from_path(
+swap out the old keyword entries of one changed document for its new ones	src/semble/index/create.py	def _reindex_file(
+fetch the neural text encoder once and keep it in memory, downloading again if the local copy is broken	src/semble/index/dense.py	def _load_cached(
+find the closest stored vectors to a given one, optionally only among an allowed list of positions	src/semble/index/dense.py	def query(
+decide if a document is worth processing based on its size, blankness and last change time	src/semble/index/files.py	def get_file_status(
+read the user configurable upper limit on how big a document may be, tolerating bad values	src/semble/index/files.py	def get_max_file_bytes(
+decide whether a path should be excluded according to the accumulated exclusion rules, handling re-include exceptions	src/semble/index/file_walker.py	def _is_ignored(
+collect the exclusion rules stored in a folder's hidden rule lists	src/semble/index/file_walker.py	def _load_ignore_for_dir(
+list everything under a folder that has the wanted suffixes, leaving out dependency and build folders	src/semble/index/file_walker.py	def walk_files(
+download a remote project into a throwaway folder and make it searchable	src/semble/index/index.py	def from_git(
+join several searchable projects into one, naming each and coping with two projects that share a name	src/semble/index/index.py	def merge(cls, indexes
+given one snippet, return other snippets that look alike, excluding itself	src/semble/index/index.py	def find_related(
+add the document's name and folder names to its text so lookups by location words hit	src/semble/index/sparse.py	def enrich_for_bm25(
+work out the install string used to launch this tool depending on whether it came from a local folder, a repository or a release	src/semble/installer/agents.py	def semble_pin(
+check whether an AI coding assistant is present on this computer	src/semble/installer/agents.py	def is_detected(
+add a setting to a user's settings file without destroying their remarks and layout	src/semble/installer/config.py	def merge_json_member(
+cut one key-value pair out of raw text along with its separator and the leftover blank row	src/semble/installer/config.py	def _delete_member(
+overwrite the delimited region we own inside a shared text file, or add it at the bottom if missing	src/semble/installer/config.py	def replace_or_append_marked(
+write or delete the packaged helper-assistant template in the user's profile	src/semble/installer/installer.py	def _apply_subagent(
+let the user tick several options in the terminal with arrow keys	src/semble/installer/installer.py	def _checkbox(
+overall setup wizard: choose tools, show what will change, ask for confirmation and do it	src/semble/installer/installer.py	def run(
+expose the lookup functions as callable tools for AI assistants over the model context protocol	src/semble/mcp.py	def create_server(
+forget a held project when its files changed, without checking too often for slow-to-build projects	src/semble/mcp.py	async def _evict_if_stale(
+return a project, building it once even if many callers ask at the same time and discarding the least recently used when full	src/semble/mcp.py	async def get(
+favor documents where several pieces scored well by raising their best piece	src/semble/ranking/boosting.py	def boost_multi_chunk_files(
+build the compiled expression that recognizes where a given name is declared across many programming languages	src/semble/ranking/boosting.py	def _definition_pattern(
+raise the rank of hits whose filename contains words the user typed	src/semble/ranking/boosting.py	def _boost_stem_matches(
+pick the final list while making repeated hits from one document count for less	src/semble/ranking/penalties.py	def rerank_topk(
+reduce scores for unit test, sample, legacy and re-export locations	src/semble/ranking/penalties.py	def _file_path_penalty(
+choose how much to trust meaning-based versus keyword-based results depending on whether the input looks like an identifier	src/semble/ranking/weighting.py	def resolve_alpha(
+turn raw relevance numbers into values based only on position in the ordering	src/semble/search.py	def _rrf_scores(
+main routine that merges the two kinds of lookups into one ordered answer list	src/semble/search.py	def search(
+log each lookup's returned text size versus whole file size to a journal, safely across processes	src/semble/stats.py	def save_search_stats(
+total up the journal entries by time period	src/semble/stats.py	def build_savings_summary(
+produce the pretty terminal table showing how much reading was avoided	src/semble/stats.py	def format_savings_report(
+break a compound programming name written with humps or underscores into its individual words	src/semble/tokens.py	def split_identifier(
+locate which stored snippet covers a given position in a document	src/semble/utils.py	def resolve_chunk(
+turn hits into a plain dictionary, optionally shortening the shown text	src/semble/utils.py	def format_results(

@@ -1,0 +1,62 @@
+name: release
+
+# A tag `v*` builds the binary for each platform and attaches one archive per
+# platform to the release: the binary, the install script and the README.
+# scripts/install.ps1 and scripts/install.sh look for these asset names.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Test
+        run: cargo test --release --locked
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/omega.exe, scripts/install.ps1, README.md package/
+          Compress-Archive -Path package/* -DestinationPath omega-${{ matrix.target }}.zip
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/omega scripts/install.sh README.md package/
+          chmod +x package/omega package/install.sh
+          tar -czf omega-${{ matrix.target }}.tar.gz -C package .
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            omega-${{ matrix.target }}.zip
+            omega-${{ matrix.target }}.tar.gz
+          fail_on_unmatched_files: false

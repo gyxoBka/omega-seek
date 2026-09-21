@@ -1,0 +1,50 @@
+pull the program file out of a gzipped tape-archive download that is held in a byte buffer	src/cli/cli.c	unsigned char *cbm_extract_binary_from_targz(
+make sure the fetched update package was not corrupted or tampered with by comparing its digest against the published list	src/cli/cli.c	static int verify_download_checksum(
+pick the longest word-like run of letters and digits out of a search expression so it can be looked up without escaping	src/cli/hook_augment.c	static bool ha_extract_token(
+break the text of a graph query into keywords, punctuation and literals before it gets parsed	src/cypher/cypher.c	int cbm_lex(
+while running a graph query, follow chains of links of unspecified length from a matched item up to a maximum number of steps	src/cypher/cypher.c	static void expand_var_length(
+decide whether a regular file gets left out while scanning a directory tree, based on ignore rules, its ending and how big it is	src/discover/discover.c	static bool should_skip_file(
+compare a path against an ignore rule containing asterisks, question marks and bracketed character sets	src/discover/gitignore.c	static bool glob_match(const char *pat, const char *str) {
+work out which programming language a source file with an ambiguous one-letter ending is written in by peeking at its first few kilobytes	src/discover/language.c	CBMLanguage cbm_disambiguate_m(
+read the global and per-repository settings files that let people associate custom file endings with a known programming language	src/discover/userconfig.c	cbm_userconfig_t *cbm_userconfig_load(
+resize a small block that came from a pool of fixed-size pieces, copying it to general memory when it outgrows the piece	src/foundation/slab_alloc.c	static void *slab_realloc(
+deduplicate identical text so each distinct value is kept only once and callers share the same pointer	src/foundation/str_intern.c	const char *cbm_intern_n(
+guard against command injection by refusing text with quotes, backticks, dollar signs or semicolons before it is handed to a subprocess	src/foundation/str_util.c	bool cbm_validate_shell_arg(
+figure out how many processors a process running under docker resource limits is really allowed to use	src/foundation/system_info.c	int cbm_detect_cgroup_cpus(
+grab large page-aligned blocks straight from the operating system while keeping a running total and peak of bytes handed out	src/foundation/vmem.c	void *cbm_vmem_alloc(
+turn indented key-colon-value text into a tree of nested dictionaries and sequences without an external library	src/foundation/yaml.c	cbm_yaml_node_t *cbm_yaml_parse(
+combine one in-memory staging graph into another, renumbering entries so the links still point at the right items	src/graph_buffer/graph_buffer.c	int cbm_gbuf_merge(
+decode one incoming protocol message from a line of text into a struct holding the call name, arguments and correlation number	src/mcp/mcp.c	int cbm_jsonrpc_parse(
+assemble the external text search shell invocation, which differs between operating systems	src/mcp/mcp.c	static void build_grep_cmd(
+restore the compressed database snapshot that teammates checked into the repository into the local cache and sanity check it	src/pipeline/artifact.c	int cbm_artifact_import(
+turn a folder location into a safe identifier by replacing slashes and unusual characters with dashes and collapsing repeats	src/pipeline/fqn.c	char *cbm_project_name_from_path(
+break a shell-style string into separate words while respecting quotation marks and backslashes	src/pipeline/pass_compile_commands.c	int cbm_split_command(
+estimate worst-case nested iteration by adding a function's own nesting to the deepest value among the functions it invokes, flagging cycles	src/pipeline/pass_complexity.c	static int tld_dfs(
+connect the third-party packages listed in a build manifest to the source files that actually pull them in	src/pipeline/pass_configlink.c	static int strategy_dep_imports(
+find places where one indexed project calls a web endpoint that is served by a different indexed project and link the two	src/pipeline/pass_cross_repo.c	static int match_http_routes(
+read unified patch output and record which spans of lines in each file were touched	src/pipeline/pass_gitdiff.c	int cbm_parse_hunks(
+mine version control history to discover pairs of files that tend to be modified in the same revision	src/pipeline/pass_githistory.c	int cbm_pipeline_githistory_compute(
+recognise strings that look like credentials, such as cloud access ids, private key blocks or chat bot tokens, so they are not stored	src/pipeline/pass_infrascan.c	bool cbm_is_secret_value(
+read a container image build recipe and collect its base image, published ports and variables	src/pipeline/pass_infrascan.c	int cbm_parse_dockerfile_source(
+process a kubernetes overlay file that lists other manifests and link it to every file it references	src/pipeline/pass_k8s.c	static void handle_kustomize(
+read the PHP package manifest to learn which namespace prefix lives in which folder	src/pipeline/pass_pkgmap.c	static void extract_psr4(
+strip the random hash and region suffix from a Google serverless host to recover the name of the deployed app	src/pipeline/pass_route_nodes.c	static const char *extract_service_name(
+detect structs that fulfil a contract without declaring it, by checking they have every required function name	src/pipeline/pass_semantic.c	int cbm_pipeline_implements_go(
+guess which implementation file a spec file exercises using naming conventions like a _test suffix or a .spec infix	src/pipeline/pass_tests.c	static char *test_to_prod_path(
+read the TypeScript project settings to learn shorthand import prefixes such as @/ and the folders they stand for	src/pipeline/path_alias.c	static cbm_path_alias_map_t *load_tsconfig_file(
+decide which documents need re-parsing by comparing modification time and byte count with what was recorded on the previous run	src/pipeline/pipeline_incremental.c	static bool *classify_files(
+check whether a possible call target lives in a module that the calling file actually pulls in, with a per-file memo	src/pipeline/registry.c	static bool is_import_reachable(
+spread N independent jobs over several OS threads that each grab the next unclaimed job number	src/pipeline/worker_pool.c	static void run_pthreads(
+get a numeric representation for a word: use the bundled learned table first, otherwise a hash-seeded handful of plus and minus ones	src/semantic/semantic.c	void cbm_sem_random_index(
+add a function's signature to the near-duplicate lookup structure by hashing slices of it into bins	src/simhash/minhash.c	void cbm_lsh_insert(
+cluster the graph by repeatedly shifting each vertex into whichever neighbouring group improves partition quality the most	src/store/store.c	static void leiden_move(
+database-side helper that computes angle-based closeness of two quantized byte arrays during nearest-neighbour lookups	src/store/store.c	static void sqlite_cosine_i8(
+web dashboard request handler that terminates a running instance given its numeric operating-system id	src/ui/http_server.c	static void handle_process_kill(
+place a point into a recursive eight-way space partition, accumulating centre of weight for approximate repulsion forces	src/ui/layout3d.c	static void octree_insert(
+check whether a repository has uncommitted or untracked edits, including inside nested repositories	src/watcher/watcher.c	static bool git_is_dirty(
+second phase of constructing the multi-keyword text matching automaton: compute fallback transitions breadth-first	internal/cbm/ac.c	static void ac_build_failure(
+when a record is too big for one database block, spill the remaining bytes into a chain of linked blocks on disk	internal/cbm/sqlite_writer.c	static uint32_t write_overflow_pages(
+count branches and nesting penalties in a function's syntax tree to score how hard it is to understand	internal/cbm/helpers.c	void cbm_compute_complexity(
+record a dependency when old-style Node code loads another file through a function call assigned to a variable	internal/cbm/extract_imports.c	static bool process_commonjs_require(
+structurally compare a concrete type against a template containing placeholders and capture what each placeholder stands for	internal/cbm/lsp/ts_lsp.c	static bool match_with_infer(
+decide from a fully qualified function name whether the call goes to a known web request, message queue or endpoint-declaring framework	internal/cbm/service_patterns.c	cbm_svc_kind_t cbm_service_pattern_match(

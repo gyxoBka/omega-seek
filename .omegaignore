@@ -1,0 +1,6 @@
+# Lock files and build output: tracked or not, searching them is rarely what anyone means.
+Cargo.lock
+package-lock.json
+target/
+vendor/
+node_modules/

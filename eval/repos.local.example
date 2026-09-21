@@ -1,0 +1,7 @@
+# name|directory with symbol.tsv, agent.tsv, paraphrase.tsv|checkout to search
+# Copy to eval/repos.local (git-ignored) and point it at your own checkouts.
+# The two sets shipped here were written against public repositories:
+semble|eval/semble|/path/to/MinishLab/semble
+cbm|eval/cbm|/path/to/codebase-memory-mcp
+# Probes for private code belong outside this repository:
+# myapp|/path/to/private-probes/myapp|/path/to/myapp

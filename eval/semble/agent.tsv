@@ -1,0 +1,50 @@
+per-OS user cache directory env var override	src/semble/cache.py	def resolve_cache_folder(
+check persisted index still fresh against file mtimes and file set	src/semble/cache.py	def get_validated_cache(
+load old index chunks vectors manifest for partial rebuild consistency checks	src/semble/cache.py	def load_previous_for_incremental(
+map chunk character offsets to start end line numbers bisect	src/semble/chunking/chunking.py	def chunk_source(
+tree-sitter AST children grouping recursive split oversized nodes	src/semble/chunking/core.py	def _merge_node_inner(
+fallback line-based text splitting without parser	src/semble/chunking/core.py	def chunk_lines(
+delete cached indexes whose project directory no longer exists	src/semble/cli.py	def _clear_orphans(
+attach stderr log handler for command line warnings idempotent	src/semble/cli.py	def _configure_cli_logging(
+argparse subcommands search find-related clear install	src/semble/cli.py	def _cli_main(
+bm25 scoring idf term frequency saturation length normalization	src/semble/index/bm25.py	def get_scores(
+delete chunk postings from inverted index	src/semble/index/bm25.py	def remove_document(
+deserialize lexical index json rebuild postings	src/semble/index/bm25.py	def load(cls, path: Path) -> "BM25"
+build index walk files chunk embed reuse unchanged files by mtime	src/semble/index/create.py	def create_index_from_path(
+replace bm25 entries of a modified file	src/semble/index/create.py	def _reindex_file(
+load static embedding model from hub retry force download	src/semble/index/dense.py	def _load_cached(
+cosine nearest neighbor top-k restricted to subset of vectors argpartition	src/semble/index/dense.py	def query(
+skip file too large empty or modified after index time	src/semble/index/files.py	def get_file_status(
+max indexable file size environment variable parsing fallback	src/semble/index/files.py	def get_max_file_bytes(
+gitignore pattern matching negation rules directory trailing slash	src/semble/index/file_walker.py	def _is_ignored(
+read .gitignore and .sembleignore into pathspec	src/semble/index/file_walker.py	def _load_ignore_for_dir(
+enumerate repository files by extension skipping node_modules venv default dirs	src/semble/index/file_walker.py	def walk_files(
+shallow clone remote repository temp dir timeout then index	src/semble/index/index.py	def from_git(
+combine multiple repo indexes unique labels path prefix	src/semble/index/index.py	def merge(cls, indexes
+similar code chunks to a given chunk same language semantic	src/semble/index/index.py	def find_related(
+append file stem and directory names to chunk text for keyword search	src/semble/index/sparse.py	def enrich_for_bm25(
+uvx --from package specifier editable or git install direct_url.json	src/semble/installer/agents.py	def semble_pin(
+detect coding agent installed binary on PATH or config directory	src/semble/installer/agents.py	def is_detected(
+insert or update key in JSON5 config preserving comments tree-sitter	src/semble/installer/config.py	def merge_json_member(
+remove JSON object entry with adjacent comma and indentation bytes	src/semble/installer/config.py	def _delete_member(
+update instructions block between start end html comment markers	src/semble/installer/config.py	def replace_or_append_marked(
+copy bundled sub-agent definition file into agent home directory	src/semble/installer/installer.py	def _apply_subagent(
+interactive multi-select prompt questionary styling	src/semble/installer/installer.py	def _checkbox(
+install uninstall flow select agents integrations confirm apply	src/semble/installer/installer.py	def run(
+FastMCP server tool registration search find_related	src/semble/mcp.py	def create_server(
+drop in-memory index when files changed cooldown window	src/semble/mcp.py	async def _evict_if_stale(
+async index cache LRU eviction shared build task	src/semble/mcp.py	async def get(
+file coherence boost multiple matching chunks same file	src/semble/ranking/boosting.py	def boost_multi_chunk_files(
+regex for symbol definition keywords def class function struct	src/semble/ranking/boosting.py	def _definition_pattern(
+boost results whose file name matches query keywords prefix	src/semble/ranking/boosting.py	def _boost_stem_matches(
+final result selection per-file saturation decay diversity	src/semble/ranking/penalties.py	def rerank_topk(
+downrank test files examples compat dirs __init__ d.ts	src/semble/ranking/penalties.py	def _file_path_penalty(
+hybrid semantic vs lexical blend weight auto by query type	src/semble/ranking/weighting.py	def resolve_alpha(
+reciprocal rank fusion score normalization	src/semble/search.py	def _rrf_scores(
+hybrid retrieval combine semantic and bm25 candidates then rerank	src/semble/search.py	def search(
+append token savings record jsonl file lock	src/semble/stats.py	def save_search_stats(
+aggregate usage records today last 7 days all time	src/semble/stats.py	def build_savings_summary(
+render token savings report ansi colors bar chart	src/semble/stats.py	def format_savings_report(
+camelCase snake_case subword splitting for lexical tokens	src/semble/tokens.py	def split_identifier(
+find chunk containing file path and line number	src/semble/utils.py	def resolve_chunk(
+serialize search results json truncate snippet lines	src/semble/utils.py	def format_results(

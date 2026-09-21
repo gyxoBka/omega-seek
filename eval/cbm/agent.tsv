@@ -1,0 +1,50 @@
+extract executable from tar.gz archive in memory	src/cli/cli.c	unsigned char *cbm_extract_binary_from_targz(
+verify downloaded release archive sha256 checksum	src/cli/cli.c	static int verify_download_checksum(
+longest identifier token from grep pattern	src/cli/hook_augment.c	static bool ha_extract_token(
+cypher query lexer tokenize input string	src/cypher/cypher.c	int cbm_lex(
+variable-length relationship expansion BFS max hops	src/cypher/cypher.c	static void expand_var_length(
+file discovery skip filter gitignore suffix size limit	src/discover/discover.c	static bool should_skip_file(
+gitignore wildcard pattern matching double star	src/discover/gitignore.c	static bool glob_match(const char *pat, const char *str) {
+.m file extension objective-c vs matlab vs magma detection	src/discover/language.c	CBMLanguage cbm_disambiguate_m(
+load user config extra extensions language mapping	src/discover/userconfig.c	cbm_userconfig_t *cbm_userconfig_load(
+slab allocator realloc promote chunk to heap	src/foundation/slab_alloc.c	static void *slab_realloc(
+string interning pool hash lookup insert	src/foundation/str_intern.c	const char *cbm_intern_n(
+validate shell argument reject dangerous metacharacters	src/foundation/str_util.c	bool cbm_validate_shell_arg(
+container cpu quota cgroup cpu.max detection	src/foundation/system_info.c	int cbm_detect_cgroup_cpus(
+virtual memory allocation mmap VirtualAlloc budget tracking	src/foundation/vmem.c	void *cbm_vmem_alloc(
+minimal yaml parser indentation map list tree	src/foundation/yaml.c	cbm_yaml_node_t *cbm_yaml_parse(
+merge worker graph buffer nodes edges remap ids	src/graph_buffer/graph_buffer.c	int cbm_gbuf_merge(
+parse json-rpc request line id method params	src/mcp/mcp.c	int cbm_jsonrpc_parse(
+build grep command string windows powershell select-string	src/mcp/mcp.c	static void build_grep_cmd(
+import shared index artifact zstd decompress into cache db	src/pipeline/artifact.c	int cbm_artifact_import(
+derive project name from absolute repo path sanitize characters	src/pipeline/fqn.c	char *cbm_project_name_from_path(
+split compiler command line into argv tokens quotes escapes	src/pipeline/pass_compile_commands.c	int cbm_split_command(
+transitive loop depth memoized DFS over call graph	src/pipeline/pass_complexity.c	static int tld_dfs(
+link manifest dependencies to import edges CONFIGURES	src/pipeline/pass_configlink.c	static int strategy_dep_imports(
+cross repo match http client calls to route handlers	src/pipeline/pass_cross_repo.c	static int match_http_routes(
+parse git diff hunk headers changed line ranges	src/pipeline/pass_gitdiff.c	int cbm_parse_hunks(
+git log change coupling files committed together	src/pipeline/pass_githistory.c	int cbm_pipeline_githistory_compute(
+detect secret value api key token pem	src/pipeline/pass_infrascan.c	bool cbm_is_secret_value(
+dockerfile parser FROM EXPOSE ENV directives	src/pipeline/pass_infrascan.c	int cbm_parse_dockerfile_source(
+kustomization overlay resources module node imports	src/pipeline/pass_k8s.c	static void handle_kustomize(
+composer.json psr-4 autoload namespace directory mapping	src/pipeline/pass_pkgmap.c	static void extract_psr4(
+cloud run url hostname service name	src/pipeline/pass_route_nodes.c	static const char *extract_service_name(
+go implicit interface satisfaction method set IMPLEMENTS edges	src/pipeline/pass_semantic.c	int cbm_pipeline_implements_go(
+map test file path to production source file	src/pipeline/pass_tests.c	static char *test_to_prod_path(
+tsconfig compilerOptions paths baseUrl alias map	src/pipeline/path_alias.c	static cbm_path_alias_map_t *load_tsconfig_file(
+incremental index changed files mtime size vs stored hashes	src/pipeline/pipeline_incremental.c	static bool *classify_files(
+candidate qualified name reachable through file imports	src/pipeline/registry.c	static bool is_import_reachable(
+parallel for worker threads atomic next index dispatch	src/pipeline/worker_pool.c	static void run_pthreads(
+token embedding pretrained vector fallback sparse random indexing	src/semantic/semantic.c	void cbm_sem_random_index(
+locality sensitive hashing band buckets insert fingerprint	src/simhash/minhash.c	void cbm_lsh_insert(
+community detection local moving phase modularity gain	src/store/store.c	static void leiden_move(
+sqlite custom function cosine similarity int8 blob vectors	src/store/store.c	static void sqlite_cosine_i8(
+http api endpoint kill process by pid	src/ui/http_server.c	static void handle_process_kill(
+barnes-hut octree insert body mass 3d layout	src/ui/layout3d.c	static void octree_insert(
+git status porcelain working tree changes submodules	src/watcher/watcher.c	static bool git_is_dirty(
+aho-corasick failure links BFS goto table	internal/cbm/ac.c	static void ac_build_failure(
+sqlite file writer overflow pages large payload	internal/cbm/sqlite_writer.c	static uint32_t write_overflow_pages(
+cyclomatic cognitive complexity single AST traversal	internal/cbm/helpers.c	void cbm_compute_complexity(
+commonjs require call import extraction local name	internal/cbm/extract_imports.c	static bool process_commonjs_require(
+typescript conditional type infer pattern matching bindings	internal/cbm/lsp/ts_lsp.c	static bool match_with_infer(
+classify resolved callee as http client async broker route registration library	internal/cbm/service_patterns.c	cbm_svc_kind_t cbm_service_pattern_match(

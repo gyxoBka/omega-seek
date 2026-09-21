@@ -1,0 +1,30 @@
+cbm_store_check_integrity	src/store/store.c	bool cbm_store_check_integrity(
+cbm_extract_like_hints	src/store/store.c	int cbm_extract_like_hints(
+cbm_gbuf_flush_to_store	src/graph_buffer/graph_buffer.c	int cbm_gbuf_flush_to_store(
+cbm_gbuf_load_from_db	src/graph_buffer/graph_buffer.c	int cbm_gbuf_load_from_db(
+cbm_cmd_uninstall	src/cli/cli.c	int cbm_cmd_uninstall(
+cbm_upsert_opencode_mcp	src/cli/cli.c	int cbm_upsert_opencode_mcp(
+cbm_cmd_hook_augment	src/cli/hook_augment.c	int cbm_cmd_hook_augment(
+parse_case_expr	src/cypher/cypher.c	static cbm_case_expr_t *parse_case_expr(
+apply_string_func	src/cypher/cypher.c	static const char *apply_string_func(
+cbm_gitignore_load	src/discover/gitignore.c	cbm_gitignore_t *cbm_gitignore_load(
+cbm_language_for_filename	src/discover/language.c	CBMLanguage cbm_language_for_filename(
+cbm_str_split	src/foundation/str_util.c	char **cbm_str_split(
+cbm_detect_cgroup_mem	src/foundation/system_info.c	size_t cbm_detect_cgroup_mem(
+handle_detect_changes	src/mcp/mcp.c	static char *handle_detect_changes(
+inject_update_notice	src/mcp/mcp.c	static char *inject_update_notice(
+cbm_artifact_commit	src/pipeline/artifact.c	char *cbm_artifact_commit(
+cbm_pipeline_fqn_folder	src/pipeline/fqn.c	char *cbm_pipeline_fqn_folder(
+cbm_tokenize_decorator	src/pipeline/pass_enrichment.c	int cbm_tokenize_decorator(
+cbm_parse_dotenv_source	src/pipeline/pass_infrascan.c	int cbm_parse_dotenv_source(
+cbm_pxc_build_module_def_index	src/pipeline/pass_lsp_cross.c	CBMModuleDefIndex *cbm_pxc_build_module_def_index(
+cbm_sem_corpus_add_doc	src/semantic/semantic.c	void cbm_sem_corpus_add_doc(
+cbm_ast_profile_from_str	src/semantic/ast_profile.c	bool cbm_ast_profile_from_str(
+cbm_layout_to_json	src/ui/layout3d.c	char *cbm_layout_to_json(
+cbm_watcher_poll_once	src/watcher/watcher.c	int cbm_watcher_poll_once(
+kt_find_extension_receiver	internal/cbm/lsp/kotlin_lsp.c	static TSNode kt_find_extension_receiver(
+rust_resolve_path_expr	internal/cbm/lsp/rust_lsp.c	static const char* rust_resolve_path_expr(
+cbm_louvain_edge_t	src/store/store.h	} cbm_louvain_edge_t;
+project_state_t	src/watcher/watcher.c	} project_state_t;
+CBM_MINHASH_JACCARD_THRESHOLD	src/simhash/minhash.h	#define CBM_MINHASH_JACCARD_THRESHOLD
+CBM_SVC_ROUTE_REG	internal/cbm/service_patterns.h	CBM_SVC_ROUTE_REG = 4,

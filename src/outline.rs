@@ -45,7 +45,22 @@ pub fn outline(index: &Index, asked: &str) -> String {
             .collect();
     }
     match matches.as_slice() {
-        [] => format!("No indexed file or directory matches `{asked}`."),
+        [] => {
+            // A guessed file name is usually right about its directory, and
+            // what is there is the next thing that would be asked.
+            let mut parent = asked;
+            while let Some((above, _)) = parent.rsplit_once('/') {
+                let prefix = format!("{above}/");
+                if index.files.iter().any(|file| file.path.starts_with(&prefix)) {
+                    return format!(
+                        "No indexed file or directory matches `{asked}`. `{above}` holds:\n\n{}",
+                        directory(index, &prefix)
+                    );
+                }
+                parent = above;
+            }
+            format!("No indexed file or directory matches `{asked}`.")
+        }
         [file] => file_outline(index, *file),
         many => {
             let mut out = format!("`{asked}` matches {} files; ask for one:\n", many.len());

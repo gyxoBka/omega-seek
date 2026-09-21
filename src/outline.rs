@@ -95,6 +95,24 @@ pub fn outline(index: &Index, asked: &str) -> String {
     }
 }
 
+/// A run of custom properties at least this long is one outline entry.
+const FOLDED_PROPERTIES: usize = 6;
+/// A stylesheet declaring more rules than this is outlined by block.
+const GROUPED_RULES: usize = 120;
+
+/// The block a stylesheet name belongs to: `table__row`, `table--wide`,
+/// `table_row` and `table` are all `table`; `--gap` and `$gap` are variables.
+fn block_of(name: &str) -> &str {
+    if name.starts_with("--") || name.starts_with('$') {
+        return "variables";
+    }
+    let end = ["__", "--", "_"]
+        .iter()
+        .filter_map(|mark| name.find(mark))
+        .min()
+        .unwrap_or(name.len());
+    &name[..end]
+}
 /// Names shown for a path that matched nothing.
 const NEAR_NAMES: usize = 5;
 /// Shared trigrams, as a share of both names, below which a name is not near.
@@ -141,32 +159,78 @@ fn file_outline(index: &Index, file: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = format!("{}{}  ({} lines{})\n", index.label, entry.path, lines.len(), kind_note(entry.kind));
 
-    let mut declared = 0;
-    // Chunks cut as windows overlap, and would list what lies in both twice.
-    let mut listed = std::collections::BTreeSet::new();
-    for chunk in index.chunks.iter().filter(|chunk| chunk.file as usize == file) {
-        for (&line, name) in chunk.name_lines.iter().zip(&chunk.names) {
-            let Some(source) = lines.get(line as usize - 1) else {
-                continue;
-            };
-            if !listed.insert(line) {
-                continue;
+    // Every declaration once, in file order: chunks cut as windows overlap
+    // and would list what lies in both twice.
+    let mut declared: Vec<(u32, &str)> = index
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.file as usize == file)
+        .flat_map(|chunk| chunk.name_lines.iter().copied().zip(chunk.names.iter().map(String::as_str)))
+        .collect();
+    declared.sort_unstable();
+    declared.dedup_by_key(|(line, _)| *line);
+
+    // A stylesheet of a whole application declares hundreds of rules, most
+    // of them one line each, and listing all of them would cost more than
+    // reading the file. They are grouped by the block they belong to --
+    // `.table`, `.table__row`, `.table--wide` are one block -- with where the
+    // block's rules lie, and a block is opened with `path`.
+    let sheet = entry.path.rsplit('.').next().is_some_and(|ext| matches!(ext, "css" | "scss" | "less" | "pcss" | "postcss"));
+    if sheet && declared.len() > GROUPED_RULES {
+        let mut blocks: Vec<(String, u32, u32, usize)> = Vec::new();
+        for &(line, name) in &declared {
+            let block = block_of(name).to_owned();
+            match blocks.last_mut() {
+                Some((last, _, end, count)) if *last == block => {
+                    *end = line;
+                    *count += 1;
+                }
+                _ => blocks.push((block, line, line, 1)),
             }
-            // Nesting is kept, so a method reads as its class's.
-            let columns: usize = source
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .map(|c| if c == '\t' { 4 } else { 1 })
-                .sum();
-            let depth = columns.div_ceil(4).min(3);
-            let signature = source.trim().trim_end_matches(['{', '(', ':']).trim_end();
-            // A nested rule is written as `&__title` and known as `card__title`.
-            let known_as = if signature.starts_with('&') { format!("  = {name}") } else { String::new() };
-            let _ = writeln!(out, "{line:>6}  {}{}{known_as}", "  ".repeat(depth), clip(signature));
-            declared += 1;
         }
+        let _ = writeln!(out, "  {} rules in {} blocks; `search` a name, or `usages` a class, for its rule:", declared.len(), blocks.len());
+        for (block, start, end, count) in &blocks {
+            let span = if start == end { format!("{start}") } else { format!("{start}-{end}") };
+            let _ = writeln!(out, "{span:>11}  {block}  ({count})");
+        }
+        return out;
     }
-    if declared == 0 {
+
+    let mut at = 0;
+    while at < declared.len() {
+        let (line, name) = declared[at];
+        let Some(source) = lines.get(line as usize - 1) else {
+            at += 1;
+            continue;
+        };
+        // Nesting is kept, so a method reads as its class's.
+        let columns: usize = source
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .map(|c| if c == '\t' { 4 } else { 1 })
+            .sum();
+        let depth = columns.div_ceil(4).min(3);
+        let indent = "  ".repeat(depth);
+        // A theme sets custom properties by the hundred, one a line; they are
+        // one entry here, as are a sheet of `$variables`; `search` or `usages`
+        // answers about any one of them.
+        let run = declared[at..].iter().take_while(|(_, name)| name.starts_with("--") || name.starts_with('$')).count();
+        if run >= FOLDED_PROPERTIES {
+            let (last, _) = declared[at + run - 1];
+            let _ = writeln!(out, "{line:>6}  {indent}{name} ... {run} variables, to line {last}");
+            at += run;
+            continue;
+        }
+        let signature = source.trim();
+        // A rule written out on one line is its selector here, not its body.
+        let signature = if sheet { signature.split('{').next().unwrap_or(signature) } else { signature };
+        let signature = signature.trim_end_matches(['{', '(', ':']).trim_end();
+        // A nested rule is written as `&__title` and known as `card__title`.
+        let known_as = if signature.starts_with('&') { format!("  = {name}") } else { String::new() };
+        let _ = writeln!(out, "{line:>6}  {indent}{}{known_as}", clip(signature));
+        at += 1;
+    }
+    if declared.is_empty() {
         out.push_str("  (no declarations recognised; read the file, or search within it with `path`)\n");
     }
     out

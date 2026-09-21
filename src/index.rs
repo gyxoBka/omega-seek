@@ -239,7 +239,7 @@ impl Index {
 
 /// Bumped whenever chunking, tokenizing, naming or embedding changes what a
 /// file is read as: an older cache is then ignored rather than trusted.
-const STORE_VERSION: u32 = 9;
+const STORE_VERSION: u32 = 14;
 
 /// Whether the cache describes exactly the tree that was walked.
 fn matches(cache: &HashMap<String, CachedFile>, walked: &Walked) -> bool {
@@ -640,10 +640,12 @@ fn declared_in_sheet(line: &str) -> Option<&str> {
     let variable = VARIABLE
         .get_or_init(|| Regex::new(r"^(?:(\$[A-Za-z_][\w-]*)|\s+(--[A-Za-z_][\w-]*)|(--[A-Za-z_][\w-]*))\s*:").expect("a valid regex"));
     let hook = HOOK.get_or_init(|| Regex::new(r"[.#%]([A-Za-z_][\w-]*)").expect("a valid regex"));
-    let element = ELEMENT.get_or_init(|| Regex::new(r"^:{0,2}([A-Za-z][\w-]*)").expect("a valid regex"));
+    // `*` and `*:focus-visible` are rules about everything, named `*`.
+    let element = ELEMENT.get_or_init(|| Regex::new(r"^(?::{0,2}([A-Za-z][\w-]*)|(\*))").expect("a valid regex"));
 
     let trimmed = line.trim();
-    if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+    // `* text` continues a comment; `*:focus-visible {` is a rule.
+    if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("* ") || trimmed == "*" || trimmed.starts_with("*/") {
         return None;
     }
     if let Some(found) = at_rule.captures(trimmed) {
@@ -668,7 +670,7 @@ fn declared_in_sheet(line: &str) -> Option<&str> {
     }
     hook.captures(selector)
         .or_else(|| element.captures(selector))
-        .and_then(|found| found.get(1))
+        .and_then(|found| found.get(1).or_else(|| found.get(2)))
         .map(|name| name.as_str())
         // The steps of an animation are not what a stylesheet declares.
         .filter(|name| !matches!(*name, "from" | "to"))
@@ -726,7 +728,18 @@ fn styled_names(lines: &[&str], syntax: &[Syntax]) -> Vec<Option<String>> {
 /// The `id` an element is given, which is how scripts and styles refer to it.
 fn declared_in_markup(line: &str) -> Option<&str> {
     static ID: OnceLock<Regex> = OnceLock::new();
-    let id = ID.get_or_init(|| Regex::new(r#"\sid=["']([A-Za-z_][\w-]*)["']"#).expect("a valid regex"));
+    static TEMPLATE: OnceLock<Regex> = OnceLock::new();
+    // A named template -- Go's `{{define "x"}}`, Jinja's and Twig's
+    // `{% block x %}` and `{% macro x(`, Django's too -- is what the other
+    // templates and the code refer to, by that name.
+    let template = TEMPLATE.get_or_init(|| {
+        Regex::new(r#"\{\{-?\s*(?:define|block)\s+"([^"]+)"|\{%-?\s*(?:block|macro)\s+([A-Za-z_][\w-]*)"#).expect("a valid regex")
+    });
+    if let Some(found) = template.captures(line) {
+        return found.get(1).or_else(|| found.get(2)).map(|name| name.as_str());
+    }
+    // An id is written in whatever alphabet the page is.
+    let id = ID.get_or_init(|| Regex::new(r#"\sid=["']([\p{L}_][\p{L}\p{N}_-]*)["']"#).expect("a valid regex"));
     id.captures(line).and_then(|found| found.get(1)).map(|name| name.as_str())
 }
 
@@ -741,8 +754,9 @@ fn names_in(
     let mut name_lines = Vec::new();
     for (offset, line) in lines.iter().enumerate() {
         if syntax.get(offset).is_some_and(|syntax| *syntax != Syntax::Code) {
-            let found = styled.get(offset).and_then(Option::as_ref);
-            if let Some(name) = found.filter(|name| !names.contains(name)) {
+            // A stylesheet says `.card__icon` again under each modifier, and
+            // every place it does is a place the agent has to know about.
+            if let Some(name) = styled.get(offset).and_then(Option::as_ref) {
                 names.push(name.clone());
                 name_lines.push(first_line + offset as u32);
                 if names.len() == MAX_NAMES {
@@ -962,9 +976,20 @@ fn reads_as_tests(text: &str) -> bool {
 }
 
 /// Code written by a bundler rather than a person: a few enormous lines.
+/// A bundle: long lines throughout. A page whose lines are long because each
+/// holds an inline SVG or a one-line template is not one -- it still breaks
+/// where a person broke it, so the longest run of long lines is short.
 fn is_minified(text: &str) -> bool {
     let lines = text.lines().count().max(1);
-    text.len() > 4096 && text.len() / lines > 400
+    if text.len() <= 4096 || text.len() / lines <= 400 {
+        return false;
+    }
+    let (mut run, mut longest) = (0, 0);
+    for line in text.lines() {
+        run = if line.len() > 400 { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    lines < 8 || longest * 2 > lines
 }
 
 fn kind_of(relative: &Path) -> Option<Kind> {
@@ -1062,6 +1087,9 @@ mod tests {
             "  width: calc(#{$grid-gap} * 2);",      // 30
             "}",                                     // 31
             ".chip { padding: 0 8px; }",             // 32
+            "*:focus-visible {",                     // 33
+            "  outline: 2px solid red;",             // 34
+            "}",                                     // 35
         ];
         let syntax = super::syntax_of("theme/card.scss", &sheet);
         let styled = super::styled_names(&sheet, &syntax);
@@ -1082,6 +1110,7 @@ mod tests {
                 ("root", 28),
                 ("site-header", 29),
                 ("chip", 32),
+                ("*", 33),
             ]
         );
 
@@ -1091,10 +1120,10 @@ mod tests {
         let syntax = super::syntax_of("Menu.vue", &component);
         let styled = super::styled_names(&component, &syntax);
         assert_eq!(names_in(&component, &syntax, &styled, 1).0, ["open", "menu"]);
-        let page = ["<main id=\"app\">", "<script>", "function boot() {", "}", "</script>", "</main>"];
+        let page = ["{{define \"page-head\"}}", "<main id=\"app\">", "<script>", "function boot() {", "}", "</script>", "</main>", "{% block content %}"];
         let syntax = super::syntax_of("index.html", &page);
         let styled = super::styled_names(&page, &syntax);
-        assert_eq!(names_in(&page, &syntax, &styled, 1).0, ["app", "boot"]);
+        assert_eq!(names_in(&page, &syntax, &styled, 1).0, ["page-head", "app", "boot", "content"]);
     }
 
     #[test]

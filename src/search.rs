@@ -97,6 +97,8 @@ const SKIM_LINES: usize = 4;
 /// declares the identifier asked for and the next one scores under this share
 /// of it, the right lines were first every time: two answers are enough.
 const DECLARED_GAP: f32 = 0.75;
+/// Other declarations of the same name shown beside it.
+const DECLARED_COMPANY: usize = 3;
 /// When none of the first three answers contains half of the question's terms,
 /// the right lines were among them 29% of the time, against 87% otherwise.
 const CONFIDENT_COVERAGE: f32 = 0.5;
@@ -405,8 +407,17 @@ pub fn present(hits: &[Hit]) -> (Vec<(Hit, Detail)>, bool) {
     };
     let runner_up = hits.get(1).map_or(0.0, |hit| hit.score / first.score);
     if first.declares && runner_up < DECLARED_GAP {
+        // Company only from answers that declare the name too -- an overload, a
+        // method of the same name in another type. Anything else after a
+        // declaration found by name is a loose match on one of its words.
         let mut shown = vec![(*first, Detail::Declaration)];
-        shown.extend(hits.get(1).map(|hit| (*hit, Detail::Skim)));
+        shown.extend(
+            hits.iter()
+                .skip(1)
+                .filter(|hit| hit.declares)
+                .take(DECLARED_COMPANY)
+                .map(|hit| (*hit, Detail::Skim)),
+        );
         return (shown, true);
     }
     let best = hits
@@ -468,7 +479,7 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
             .map(|(_, line)| declaration_extent(&all, line as usize));
         let (start, end) = declared.unwrap_or((hit.start_line as usize, hit.end_line as usize));
 
-        let _ = write!(out, "{}:{start}-{end}", file.path);
+        let _ = write!(out, "{}{}:{start}-{end}", index.label, file.path);
         // A widened answer declares what every chunk under it declares.
         let names: Vec<&str> = index
             .chunks
@@ -508,12 +519,16 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
             }
             if let Some((name, _)) = declared_line(index, &hit, query) {
                 let (others, files) = crate::usages::count(index, name);
+                if others == 0 {
+                    let _ = writeln!(out, "       not named anywhere else in the code");
+                } else {
                 let _ = writeln!(
                     out,
                     "       named on {others} other line{} across {files} file{} (`usages` lists them)",
                     if others == 1 { "" } else { "s" },
                     if files == 1 { "" } else { "s" },
                 );
+                }
             }
         }
         out.push('\n');
@@ -655,6 +670,11 @@ mod tests {
         let hits = [hit(1.0, 1.0, true), hit(0.57, 0.5, false), hit(0.5, 0.5, false), hit(0.4, 0.2, false)];
         let (shown, confident) = present(&hits);
         let details: Vec<Detail> = shown.iter().map(|(_, detail)| *detail).collect();
+        assert_eq!(details, [Detail::Declaration], "a loose match is no company for a declaration");
+
+        // Another declaration of the same name is.
+        let hits = [hit(1.0, 1.0, true), hit(0.6, 0.5, false), hit(0.5, 1.0, true)];
+        let details: Vec<Detail> = present(&hits).0.iter().map(|(_, detail)| *detail).collect();
         assert_eq!(details, [Detail::Declaration, Detail::Skim]);
         assert!(confident);
     }

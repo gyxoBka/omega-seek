@@ -59,6 +59,29 @@ deleting the directory is always safe.
 A file that is mostly assertions is treated as tests wherever it sits (Rust
 aside, whose tests live in the file they test).
 
+## Which directory a call is about
+
+A server is started in one repository, and an agent does not always stay in
+it. `root` (absolute, or relative to the server's repository) names another:
+it is snapped to the checkout it lies in -- the nearest ancestor holding
+`.git`, as a directory or as a worktree's file -- and what remains becomes the
+path filter; a directory under no checkout, such as one holding several
+repositories, is indexed as one tree, which is all that searching a workspace
+takes. An absolute path in `path` implies its checkout the same way; a checkout
+nested under a hidden directory of the home repository (where harnesses put
+worktrees, and where the home walk never looks) stands apart. Up to four roots
+stay indexed, the home root always among them; a drive, a home directory or a
+tree of more than 60,000 source files is refused before it costs minutes.
+
+No harness tells an MCP server where its agent currently is -- roots are
+deprecated in the protocol, and hooks would tie this to one harness -- so the
+server tells the agent instead, and only when it matters: `instructions` at
+connection name the indexed directory; an answer about another root opens with
+it and carries absolute paths; an answer from a main checkout that has linked
+worktrees (read from `.git/worktrees`) names them. Calls are stateless:
+sub-agents can share one server process, and one in a worktree must not
+redirect the others.
+
 ## Installing into agents
 
 `omega install` offers three independent integrations per agent: the MCP

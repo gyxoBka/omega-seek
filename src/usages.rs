@@ -95,7 +95,7 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
             ),
         };
     }
-    render(needle.text(), &mut found, options)
+    render(&index.label, needle.text(), &mut found, options)
 }
 
 /// How many lines other than its declarations name `symbol`, and in how many files.
@@ -204,7 +204,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         .collect()
 }
 
-fn render(symbol: &str, found: &mut [FileUsages], options: &Options) -> String {
+fn render(label: &str, symbol: &str, found: &mut [FileUsages], options: &Options) -> String {
     // Code before tests, and within each the files that use it most.
     found.sort_by(|a, b| {
         (a.kind == Kind::Test, std::cmp::Reverse(a.lines.len()), &a.path)
@@ -231,7 +231,7 @@ fn render(symbol: &str, found: &mut [FileUsages], options: &Options) -> String {
         out.push_str("\nDeclared:\n");
         for file in found.iter() {
             for line in file.lines.iter().filter(|line| line.declares) {
-                let _ = writeln!(out, "{}:{}  {}", file.path, line.number, clip(&line.text));
+                let _ = writeln!(out, "{label}{}:{}  {}", file.path, line.number, clip(&line.text));
                 budget = budget.saturating_sub(1);
             }
         }
@@ -247,7 +247,7 @@ fn render(symbol: &str, found: &mut [FileUsages], options: &Options) -> String {
             unshown.push(format!("{} ({})", file.path, uses.len()));
             continue;
         }
-        let _ = writeln!(out, "{}", file.path);
+        let _ = writeln!(out, "{label}{}", file.path);
         let shown = uses.len().min(budget).min(PER_FILE);
         for line in &uses[..shown] {
             let inside = line.inside.as_deref().map(|name| format!("[{name}] ")).unwrap_or_default();

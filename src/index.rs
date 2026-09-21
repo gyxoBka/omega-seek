@@ -63,6 +63,10 @@ pub struct Index {
     cache: HashMap<String, CachedFile>,
     /// Where the cache is kept between runs, when it is.
     store: Option<PathBuf>,
+    /// What an answer puts in front of each path: nothing for the directory
+    /// the agent is taken to be in, the root itself for anywhere else, so that
+    /// a path in an answer can be opened as it stands.
+    pub label: String,
 }
 
 impl std::fmt::Debug for Index {
@@ -206,9 +210,30 @@ impl Index {
         if matches(&self.cache, &walked) {
             return self;
         }
-        let index = assemble(self.root, self.model, self.tokenizer, self.cache, walked, self.store);
+        let label = self.label;
+        let mut index = assemble(self.root, self.model, self.tokenizer, self.cache, walked, self.store);
+        index.label = label;
         index.save();
         index
+    }
+
+    /// Whether `root` holds more indexable files than `limit`, found without
+    /// reading any of them: a root named by mistake is refused before it costs
+    /// minutes.
+    #[must_use]
+    pub fn holds_more_than(root: &Path, limit: usize) -> bool {
+        ignore::WalkBuilder::new(root)
+            .add_custom_ignore_filename(".omegaignore")
+            .require_git(false)
+            .build()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+            .filter(|entry| {
+                let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
+                !is_junk(relative) && kind_of(relative).is_some()
+            })
+            .nth(limit)
+            .is_some()
     }
 }
 
@@ -457,6 +482,7 @@ fn assemble(
         tokenizer,
         cache,
         store,
+        label: String::new(),
     }
 }
 

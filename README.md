@@ -96,6 +96,27 @@ omega usages "connection refused"
 omega outline src/auth
 ```
 
+## Other repositories and worktrees
+
+omega answers about the repository it was started in. Every tool also takes a
+`root`, so an agent can look next door without leaving its own:
+
+```
+search("order payload validation", root="../backend")    # a sibling repository
+usages("/api/orders", root="..")                         # the whole workspace, as one tree
+outline("", root="..")                                   # which repositories are next door
+search("retry policy", root="/work/app-wt/fix-auth")     # a git worktree
+```
+
+A directory inside a repository means that repository, narrowed to the
+directory; an absolute path in any argument implies its repository without a
+`root`. The agent is never left guessing where an answer came from: omega says
+which directory it indexes when it connects, names the root and gives absolute
+paths whenever a call looked elsewhere, and -- when the repository has git
+worktrees an agent might be working in -- says so at the top of the answer.
+Nothing is remembered between calls, so agents sharing one server cannot
+redirect each other.
+
 ## Keeping things out of the index
 
 `.gitignore` is honoured, with or without a `.git`. Add a `.omegaignore` (same

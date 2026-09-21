@@ -52,7 +52,8 @@ fn run() -> Result<(), String> {
             "--lines" => options.snippet_lines = number(&value("--lines")?)?,
             "--path" => options.path = Some(value("--path")?),
             "--content" => {
-                options.content = Content::parse(&value("--content")?).ok_or("unknown --content")?;
+                options.content =
+                    Content::parse(&value("--content")?).ok_or("unknown --content")?;
             }
             "--agents" => {
                 request.agents = Some(value("--agents")?.split(',').map(str::to_owned).collect());
@@ -62,7 +63,8 @@ fn run() -> Result<(), String> {
                     .split(',')
                     .map(omega::install::Integration::parse)
                     .collect();
-                request.integrations = Some(parsed.ok_or("unknown --integrations; use mcp,instructions,subagent")?);
+                request.integrations =
+                    Some(parsed.ok_or("unknown --integrations; use mcp,instructions,subagent")?);
             }
             "--yes" | "-y" => request.yes = true,
             "--dry-run" => request.dry_run = true,
@@ -78,7 +80,10 @@ fn run() -> Result<(), String> {
 
     // A root that is not there would index nothing and answer "no matches":
     // the agent would conclude the code does not exist.
-    let reads_a_tree = matches!(command.as_str(), "search" | "outline" | "usages" | "eval" | "mcp");
+    let reads_a_tree = matches!(
+        command.as_str(),
+        "search" | "outline" | "usages" | "eval" | "mcp"
+    );
     if reads_a_tree && !root.is_dir() {
         return Err(format!("--root {} is not a directory", root.display()));
     }
@@ -115,7 +120,10 @@ fn run() -> Result<(), String> {
             if limit_given {
                 wanted.limit = options.limit;
             }
-            print!("{}", omega::usages::usages(&index, &positional.join(" "), &wanted));
+            print!(
+                "{}",
+                omega::usages::usages(&index, &positional.join(" "), &wanted)
+            );
             Ok(())
         }
         "eval" => eval(&root, model.as_deref(), &positional, eval_limit, eval_hits),
@@ -166,17 +174,26 @@ fn eval(
                 continue;
             };
             let expected = expected.trim();
-            let anchor = columns.next().map(str::trim).filter(|anchor| !anchor.is_empty());
+            let anchor = columns
+                .next()
+                .map(str::trim)
+                .filter(|anchor| !anchor.is_empty());
             let asked = Instant::now();
             let mut hits = search(&index, question, &options);
             spent += asked.elapsed();
             if hits_given {
-                hits = omega::search::present(&hits).0.into_iter().map(|(hit, _)| hit).collect();
+                hits = omega::search::present(&hits)
+                    .0
+                    .into_iter()
+                    .map(|(hit, _)| hit)
+                    .collect();
             }
 
             let mut seen: Vec<&str> = Vec::new();
             for hit in &hits {
-                let path = index.files[index.chunks[hit.chunk].file as usize].path.as_str();
+                let path = index.files[index.chunks[hit.chunk].file as usize]
+                    .path
+                    .as_str();
                 if !seen.contains(&path) {
                     seen.push(path);
                 }
@@ -205,7 +222,10 @@ fn eval(
             }
         }
         let per_query = spent.as_secs_f32() * 1000.0 / file_ranks.len().max(1) as f32;
-        println!("\n=== {file}  ({} probes, {per_query:.1} ms/query)", file_ranks.len());
+        println!(
+            "\n=== {file}  ({} probes, {per_query:.1} ms/query)",
+            file_ranks.len()
+        );
         report("file", &file_ranks);
         if !span_ranks.is_empty() {
             report("span", &span_ranks);
@@ -216,10 +236,24 @@ fn eval(
 
 fn report(label: &str, ranks: &[Option<usize>]) {
     let total = ranks.len().max(1) as f32;
-    let recall = |k: usize| ranks.iter().filter(|rank| rank.is_some_and(|rank| rank < k)).count() as f32 / total;
-    let mrr: f32 = ranks.iter().map(|rank| rank.map_or(0.0, |rank| 1.0 / (rank as f32 + 1.0))).sum();
+    let recall = |k: usize| {
+        ranks
+            .iter()
+            .filter(|rank| rank.is_some_and(|rank| rank < k))
+            .count() as f32
+            / total
+    };
+    let mrr: f32 = ranks
+        .iter()
+        .map(|rank| rank.map_or(0.0, |rank| 1.0 / (rank as f32 + 1.0)))
+        .sum();
     println!(
         "  {label}  R@1 {:.3}  R@3 {:.3}  R@5 {:.3}  R@10 {:.3}  R@20 {:.3}  MRR {:.3}",
-        recall(1), recall(3), recall(5), recall(10), recall(20), mrr / total
+        recall(1),
+        recall(3),
+        recall(5),
+        recall(10),
+        recall(20),
+        mrr / total
     );
 }

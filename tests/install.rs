@@ -32,9 +32,13 @@ fn claude_round_trip_leaves_what_was_there() {
 
     for integration in Integration::ALL {
         let action = apply(Mode::Install, claude, integration, Path::new(EXE));
-        assert!(matches!(action, Action::Created | Action::Updated), "{integration:?}: {action:?}");
+        assert!(
+            matches!(action, Action::Created | Action::Updated),
+            "{integration:?}: {action:?}"
+        );
     }
-    let written: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
+    let written: Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert_eq!(written["mcpServers"]["omega"]["command"], EXE);
     assert_eq!(written["mcpServers"]["omega"]["args"][0], "mcp");
     assert_eq!(written["mcpServers"]["other"]["command"], "x");
@@ -42,24 +46,41 @@ fn claude_round_trip_leaves_what_was_there() {
     let keys: Vec<&String> = written.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["numStartups", "mcpServers", "theme"]);
     let md = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
-    assert!(md.starts_with(claude_md.trim_end()) && md.contains("OMEGA_START") && md.contains("usages"));
+    assert!(
+        md.starts_with(claude_md.trim_end()) && md.contains("OMEGA_START") && md.contains("usages")
+    );
     assert!(home.join(".claude/agents/omega.md").exists());
     assert!(home.join(".claude.json.omega.bak").exists());
 
     // Again: nothing to do.
     for integration in Integration::ALL {
-        assert_eq!(apply(Mode::Install, claude, integration, Path::new(EXE)), Action::Unchanged);
+        assert_eq!(
+            apply(Mode::Install, claude, integration, Path::new(EXE)),
+            Action::Unchanged
+        );
     }
 
     for integration in Integration::ALL {
-        assert_eq!(apply(Mode::Uninstall, claude, integration, Path::new(EXE)), Action::Removed);
+        assert_eq!(
+            apply(Mode::Uninstall, claude, integration, Path::new(EXE)),
+            Action::Removed
+        );
     }
-    assert_eq!(std::fs::read_to_string(home.join(".claude.json")).unwrap(), claude_json);
-    assert_eq!(std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap(), claude_md);
+    assert_eq!(
+        std::fs::read_to_string(home.join(".claude.json")).unwrap(),
+        claude_json
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap(),
+        claude_md
+    );
     assert!(!home.join(".claude/agents/omega.md").exists());
     assert!(!home.join(".claude.json.omega.bak").exists());
     for integration in Integration::ALL {
-        assert_eq!(apply(Mode::Uninstall, claude, integration, Path::new(EXE)), Action::NotFound);
+        assert_eq!(
+            apply(Mode::Uninstall, claude, integration, Path::new(EXE)),
+            Action::NotFound
+        );
     }
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -72,14 +93,28 @@ fn codex_toml_keeps_its_other_tables_and_comments() {
     let all = agents(&Dirs::under(&home));
     let codex = all.iter().find(|agent| agent.id == "codex").unwrap();
 
-    assert_eq!(apply(Mode::Install, codex, Integration::Mcp, Path::new(EXE)), Action::Updated);
+    assert_eq!(
+        apply(Mode::Install, codex, Integration::Mcp, Path::new(EXE)),
+        Action::Updated
+    );
     let written = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert!(written.starts_with(config.trim_end()));
-    assert!(written.contains("[mcp_servers.omega]\ncommand = 'C:\\Tools\\omega.exe'\nargs = [\"mcp\"]"));
-    assert_eq!(apply(Mode::Install, codex, Integration::Mcp, Path::new(EXE)), Action::Unchanged);
+    assert!(
+        written.contains("[mcp_servers.omega]\ncommand = 'C:\\Tools\\omega.exe'\nargs = [\"mcp\"]")
+    );
+    assert_eq!(
+        apply(Mode::Install, codex, Integration::Mcp, Path::new(EXE)),
+        Action::Unchanged
+    );
 
-    assert_eq!(apply(Mode::Uninstall, codex, Integration::Mcp, Path::new(EXE)), Action::Removed);
-    assert_eq!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(), config);
+    assert_eq!(
+        apply(Mode::Uninstall, codex, Integration::Mcp, Path::new(EXE)),
+        Action::Removed
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
+        config
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -92,7 +127,10 @@ fn a_config_with_comments_is_left_alone() {
     let path = vscode.mcp.as_ref().unwrap().0.clone();
     put(&path, config);
 
-    assert!(matches!(apply(Mode::Install, vscode, Integration::Mcp, Path::new(EXE)), Action::Skipped(_)));
+    assert!(matches!(
+        apply(Mode::Install, vscode, Integration::Mcp, Path::new(EXE)),
+        Action::Skipped(_)
+    ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -103,17 +141,29 @@ fn a_fresh_home_gets_new_files_and_loses_them_again() {
     let all = agents(&Dirs::under(&home));
     let opencode = all.iter().find(|agent| agent.id == "opencode").unwrap();
     for integration in Integration::ALL {
-        assert_eq!(apply(Mode::Install, opencode, integration, Path::new(EXE)), Action::Created);
+        assert_eq!(
+            apply(Mode::Install, opencode, integration, Path::new(EXE)),
+            Action::Created
+        );
     }
     let path = &opencode.mcp.as_ref().unwrap().0;
     let written: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(written["mcp"]["omega"]["command"][1], "mcp");
     assert_eq!(written["mcp"]["omega"]["type"], "local");
     for integration in [Integration::Instructions, Integration::Subagent] {
-        assert_eq!(apply(Mode::Uninstall, opencode, integration, Path::new(EXE)), Action::Removed);
+        assert_eq!(
+            apply(Mode::Uninstall, opencode, integration, Path::new(EXE)),
+            Action::Removed
+        );
     }
-    assert_eq!(apply(Mode::Uninstall, opencode, Integration::Mcp, Path::new(EXE)), Action::Removed);
-    assert!(!path.exists(), "a config install created holds nothing else, so it is gone");
+    assert_eq!(
+        apply(Mode::Uninstall, opencode, Integration::Mcp, Path::new(EXE)),
+        Action::Removed
+    );
+    assert!(
+        !path.exists(),
+        "a config install created holds nothing else, so it is gone"
+    );
     // The instructions file held nothing but our block, so it is gone.
     assert!(!opencode.instructions.as_ref().unwrap().exists());
     let _ = std::fs::remove_dir_all(&home);
@@ -126,23 +176,39 @@ fn a_fresh_home_gets_new_files_and_loses_them_again() {
 fn installing_again_never_writes_anything_twice() {
     let home = scratch("twice");
     put(&home.join(".claude.json"), "{\n  \"mcpServers\": {}\n}\n");
-    put(&home.join(".claude/CLAUDE.md"), "# Mine\r\n\r\nKeep this.\r\n");
+    put(
+        &home.join(".claude/CLAUDE.md"),
+        "# Mine\r\n\r\nKeep this.\r\n",
+    );
     put(&home.join(".codex/config.toml"), "model = \"o\"\n");
     put(&home.join(".codex/AGENTS.md"), "# Codex notes\n");
     let all = agents(&Dirs::under(&home));
-    let chosen: Vec<_> = all.iter().filter(|agent| ["claude", "codex"].contains(&agent.id)).collect();
+    let chosen: Vec<_> = all
+        .iter()
+        .filter(|agent| ["claude", "codex"].contains(&agent.id))
+        .collect();
 
     let snapshot = |home: &Path| -> Vec<String> {
-        [".claude.json", ".claude/CLAUDE.md", ".claude/agents/omega.md", ".codex/config.toml", ".codex/AGENTS.md", ".codex/agents/omega.toml"]
-            .iter()
-            .map(|name| std::fs::read_to_string(home.join(name)).unwrap())
-            .collect()
+        [
+            ".claude.json",
+            ".claude/CLAUDE.md",
+            ".claude/agents/omega.md",
+            ".codex/config.toml",
+            ".codex/AGENTS.md",
+            ".codex/agents/omega.toml",
+        ]
+        .iter()
+        .map(|name| std::fs::read_to_string(home.join(name)).unwrap())
+        .collect()
     };
     let install = |exe: &str| {
         for agent in &chosen {
             for integration in Integration::ALL {
                 let action = apply(Mode::Install, agent, integration, Path::new(exe));
-                assert!(!matches!(action, Action::Failed(_) | Action::Skipped(_)), "{action:?}");
+                assert!(
+                    !matches!(action, Action::Failed(_) | Action::Skipped(_)),
+                    "{action:?}"
+                );
             }
         }
     };
@@ -151,19 +217,36 @@ fn installing_again_never_writes_anything_twice() {
     let once = snapshot(&home);
     install(EXE);
     install(EXE);
-    assert_eq!(snapshot(&home), once, "a second and third install changed nothing");
+    assert_eq!(
+        snapshot(&home),
+        once,
+        "a second and third install changed nothing"
+    );
 
     // The binary moved: every reference follows it, and there is still one of each.
     let moved = r"D:\Elsewhere\omega.exe";
     install(moved);
     let after = snapshot(&home);
-    for (text, name) in after.iter().zip(["json", "CLAUDE.md", "agent", "toml", "AGENTS.md", "codex agent"]) {
-        assert!(!text.contains(r"C:\Tools") && !text.contains(r"C:\\Tools"), "{name} still names the old path");
+    for (text, name) in after.iter().zip([
+        "json",
+        "CLAUDE.md",
+        "agent",
+        "toml",
+        "AGENTS.md",
+        "codex agent",
+    ]) {
+        assert!(
+            !text.contains(r"C:\Tools") && !text.contains(r"C:\\Tools"),
+            "{name} still names the old path"
+        );
     }
     assert_eq!(after[0].matches("\"omega\"").count(), 1);
     assert_eq!(after[1].matches("OMEGA_START").count(), 1);
     assert_eq!(after[1].matches("OMEGA_END").count(), 1);
-    assert!(after[1].starts_with("# Mine\r\n\r\nKeep this."), "the user's own lines are as they were");
+    assert!(
+        after[1].starts_with("# Mine\r\n\r\nKeep this."),
+        "the user's own lines are as they were"
+    );
     assert_eq!(after[3].matches("[mcp_servers.omega]").count(), 1);
     assert_eq!(after[4].matches("OMEGA_START").count(), 1);
     assert!(after[4].starts_with("# Codex notes"));
@@ -177,12 +260,17 @@ fn the_instructions_are_short_and_say_what_they_must() {
     let home = scratch("wording");
     let all = agents(&Dirs::under(&home));
     let claude = all.iter().find(|agent| agent.id == "claude").unwrap();
-    let written = apply(Mode::Install, claude, Integration::Instructions, Path::new(EXE));
+    let written = apply(
+        Mode::Install,
+        claude,
+        Integration::Instructions,
+        Path::new(EXE),
+    );
     assert_eq!(written, Action::Created);
     let block = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
 
     let words = block.split_whitespace().count();
-    assert!(words <= 330, "{words} words: every session pays for these");
+    assert!(words <= 340, "{words} words: every session pays for these");
     for needed in [
         "FIRST",
         "node_modules",
@@ -192,13 +280,21 @@ fn the_instructions_are_short_and_say_what_they_must() {
         "whole declaration",
         "Low confidence",
         "Grep/Glob only for regular expressions",
+        "root=\"../backend\"",
+        "git worktree",
         "omega search",
     ] {
-        assert!(block.contains(needed), "the instructions no longer say `{needed}`");
+        assert!(
+            block.contains(needed),
+            "the instructions no longer say `{needed}`"
+        );
     }
     // The agent calls MCP tools and a shell finds the command on PATH: where
     // the binary lives is the MCP entry's business, not a cost of every session.
-    assert!(!block.contains(EXE) && !block.contains("{exe}"), "the instructions name a path");
+    assert!(
+        !block.contains(EXE) && !block.contains("{exe}"),
+        "the instructions name a path"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -207,11 +303,23 @@ fn the_instructions_are_short_and_say_what_they_must() {
 #[test]
 fn a_real_config_or_a_filled_in_stub_is_an_installed_agent() {
     let home = scratch("stubs");
-    put(&home.join(".kiro/settings/mcp.json"), "{\n  \"mcpServers\": {}\n}\n");
-    put(&home.join(".gemini/settings.json"), "{\n  \"mcpServers\": {}\n}\n");
-    put(&home.join(".gemini/antigravity/mcp_config.json"), "{ \"mcpServers\": {} }");
+    put(
+        &home.join(".kiro/settings/mcp.json"),
+        "{\n  \"mcpServers\": {}\n}\n",
+    );
+    put(
+        &home.join(".gemini/settings.json"),
+        "{\n  \"mcpServers\": {}\n}\n",
+    );
+    put(
+        &home.join(".gemini/antigravity/mcp_config.json"),
+        "{ \"mcpServers\": {} }",
+    );
     put(&home.join(".codex/config.toml"), "model = \"o\"\n");
-    put(&home.join(".cursor/mcp.json"), "{\"mcpServers\": {\"other\": {\"command\": \"x\"}}}");
+    put(
+        &home.join(".cursor/mcp.json"),
+        "{\"mcpServers\": {\"other\": {\"command\": \"x\"}}}",
+    );
     let all = agents(&Dirs::under(&home));
     let detected = |id: &str| all.iter().find(|agent| agent.id == id).unwrap().detected();
     // A real config, or a stub that somebody has since filled in, counts.
@@ -223,11 +331,17 @@ fn a_real_config_or_a_filled_in_stub_is_an_installed_agent() {
 #[test]
 fn hollow_directories_are_told_from_lived_in_ones() {
     let home = scratch("hollow");
-    put(&home.join(".kiro/settings/mcp.json"), "{\n  \"mcpServers\": {}\n}\n");
+    put(
+        &home.join(".kiro/settings/mcp.json"),
+        "{\n  \"mcpServers\": {}\n}\n",
+    );
     let all = agents(&Dirs::under(&home));
     let kiro = all.iter().find(|agent| agent.id == "kiro").unwrap();
     if !kiro_on_path() {
-        assert!(!kiro.detected(), "a directory of empty stubs was taken for an installed agent");
+        assert!(
+            !kiro.detected(),
+            "a directory of empty stubs was taken for an installed agent"
+        );
         // Once it holds anything real, it is one.
         put(&home.join(".kiro/steering/notes.md"), "# mine\n");
         assert!(kiro.detected());
@@ -237,6 +351,10 @@ fn hollow_directories_are_told_from_lived_in_ones() {
 
 fn kiro_on_path() -> bool {
     std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| ["kiro", "kiro.exe", "kiro.cmd"].iter().any(|name| dir.join(name).is_file()))
+        std::env::split_paths(&paths).any(|dir| {
+            ["kiro", "kiro.exe", "kiro.cmd"]
+                .iter()
+                .any(|name| dir.join(name).is_file())
+        })
     })
 }

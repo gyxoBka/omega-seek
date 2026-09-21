@@ -64,7 +64,7 @@ fn file_outline(index: &Index, file: usize) -> String {
     let entry = &index.files[file];
     let text = std::fs::read_to_string(index.root.join(&entry.path)).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
-    let mut out = format!("{}  ({} lines{})\n", entry.path, lines.len(), kind_note(entry.kind));
+    let mut out = format!("{}{}  ({} lines{})\n", index.label, entry.path, lines.len(), kind_note(entry.kind));
 
     let mut declared = 0;
     for chunk in index.chunks.iter().filter(|chunk| chunk.file as usize == file) {
@@ -103,8 +103,8 @@ fn directory(index: &Index, prefix: &str) -> String {
             None => files.push((file, rest)),
         }
     }
-    let shown = if prefix.is_empty() { "." } else { prefix.trim_end_matches('/') };
-    let mut out = format!("{shown}/  ({} files here, {} directories)\n", files.len(), below.len());
+    let shown = if prefix.is_empty() && index.label.is_empty() { "./".to_owned() } else { format!("{}{prefix}", index.label) };
+    let mut out = format!("{shown}  ({} files here, {} directories)\n", files.len(), below.len());
     for (directory, count) in below.iter().take(MAX_ENTRIES) {
         let _ = writeln!(out, "  {directory}/  ({count} files)");
     }

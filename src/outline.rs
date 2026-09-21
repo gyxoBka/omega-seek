@@ -46,20 +46,40 @@ pub fn outline(index: &Index, asked: &str) -> String {
     }
     match matches.as_slice() {
         [] => {
-            // A guessed file name is usually right about its directory, and
-            // what is there is the next thing that would be asked.
+            // A guessed path is usually nearly right: the name is close to a
+            // real one, or the directory exists. A few near names and where to
+            // look cost a line each; the whole directory would cost a page for
+            // one wrong word.
+            let mut out = format!("No indexed file or directory matches `{asked}`.\n");
             let mut parent = asked;
+            let mut holds = None;
             while let Some((above, _)) = parent.rsplit_once('/') {
                 let prefix = format!("{above}/");
-                if index.files.iter().any(|file| file.path.starts_with(&prefix)) {
-                    return format!(
-                        "No indexed file or directory matches `{asked}`. `{above}` holds:\n\n{}",
-                        directory(index, &prefix)
-                    );
+                let count = index.files.iter().filter(|file| file.path.starts_with(&prefix)).count();
+                if count > 0 {
+                    holds = Some((above, prefix, count));
+                    break;
                 }
                 parent = above;
             }
-            format!("No indexed file or directory matches `{asked}`.")
+            // Only the directory that was named vouches for loose matches: one
+            // found further up holds half the repository.
+            let named = asked.rsplit_once('/').map(|(directory, _)| directory);
+            let beside = holds
+                .as_ref()
+                .filter(|(above, _, _)| Some(*above) == named)
+                .map(|(_, prefix, _)| prefix.as_str());
+            let near = near_names(index, asked, beside);
+            if !near.is_empty() {
+                out.push_str("Closest names:\n");
+                for file in near {
+                    let _ = writeln!(out, "  {}", index.files[file].path);
+                }
+            }
+            if let Some((above, _, count)) = holds {
+                let _ = writeln!(out, "`{above}` exists and holds {count} files; outline it for the list.");
+            }
+            out
         }
         [file] => file_outline(index, *file),
         many => {
@@ -73,6 +93,46 @@ pub fn outline(index: &Index, asked: &str) -> String {
             out
         }
     }
+}
+
+/// Names shown for a path that matched nothing.
+const NEAR_NAMES: usize = 5;
+/// Shared trigrams, as a share of both names, below which a name is not near.
+const NEAR_ENOUGH: f32 = 0.3;
+const NEAR_ELSEWHERE: f32 = 0.6;
+
+/// The files whose names are most like the one asked for, those under
+/// `beside` first among equals: a wrong name in the right directory is the
+/// common mistake, the right name in a wrong directory the next.
+fn near_names(index: &Index, asked: &str, beside: Option<&str>) -> Vec<usize> {
+    let stem = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name.split('.').next().unwrap_or(name).to_lowercase()
+    };
+    let trigrams = |name: &str| -> Vec<[char; 3]> {
+        let padded: Vec<char> = format!(" {name} ").chars().collect();
+        padded.windows(3).map(|three| [three[0], three[1], three[2]]).collect()
+    };
+    let wanted = trigrams(&stem(asked));
+    let mut scored: Vec<(f32, usize)> = index
+        .files
+        .iter()
+        .enumerate()
+        .filter_map(|(file, entry)| {
+            let has = trigrams(&stem(&entry.path));
+            let shared = wanted.iter().filter(|three| has.contains(three)).count();
+            let likeness = 2.0 * shared as f32 / (wanted.len() + has.len()) as f32;
+            // In the directory that was named a loose likeness will do, and
+            // comes first; elsewhere only a name that is nearly the same.
+            let beside = beside.is_some_and(|prefix| entry.path.starts_with(prefix));
+            let enough = if beside { NEAR_ENOUGH } else { NEAR_ELSEWHERE };
+            // A test is named after what it tests and would take its place twice.
+            let place = if beside { 1.0 } else { 0.0 } - if entry.kind == Kind::Test { 0.5 } else { 0.0 };
+            (likeness >= enough).then_some((likeness + place, file))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().take(NEAR_NAMES).map(|(_, file)| file).collect()
 }
 
 fn file_outline(index: &Index, file: usize) -> String {

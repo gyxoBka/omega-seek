@@ -142,11 +142,16 @@ fn file_outline(index: &Index, file: usize) -> String {
     let mut out = format!("{}{}  ({} lines{})\n", index.label, entry.path, lines.len(), kind_note(entry.kind));
 
     let mut declared = 0;
+    // Chunks cut as windows overlap, and would list what lies in both twice.
+    let mut listed = std::collections::BTreeSet::new();
     for chunk in index.chunks.iter().filter(|chunk| chunk.file as usize == file) {
-        for &line in &chunk.name_lines {
+        for (&line, name) in chunk.name_lines.iter().zip(&chunk.names) {
             let Some(source) = lines.get(line as usize - 1) else {
                 continue;
             };
+            if !listed.insert(line) {
+                continue;
+            }
             // Nesting is kept, so a method reads as its class's.
             let columns: usize = source
                 .chars()
@@ -155,7 +160,9 @@ fn file_outline(index: &Index, file: usize) -> String {
                 .sum();
             let depth = columns.div_ceil(4).min(3);
             let signature = source.trim().trim_end_matches(['{', '(', ':']).trim_end();
-            let _ = writeln!(out, "{line:>6}  {}{}", "  ".repeat(depth), clip(signature));
+            // A nested rule is written as `&__title` and known as `card__title`.
+            let known_as = if signature.starts_with('&') { format!("  = {name}") } else { String::new() };
+            let _ = writeln!(out, "{line:>6}  {}{}{known_as}", "  ".repeat(depth), clip(signature));
             declared += 1;
         }
     }

@@ -269,6 +269,8 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         })
         .collect();
 
+    // `.btn-primary` and `#site-header` are declared as the name without its mark.
+    let bare = symbol.trim_start_matches(['.', '#', '%']);
     // Every declaration of each candidate file, by line, to label lines with.
     let mut declared: Vec<Vec<(u32, &str)>> = vec![Vec::new(); index.files.len()];
     for chunk in &index.chunks {
@@ -287,14 +289,19 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
             let lines: Vec<Line> = text
                 .lines()
                 .enumerate()
-                .filter(|(_, line)| match needle {
+                .filter(|(offset, line)| match needle {
                     Needle::Word(name) => !is_comment(line) && has_word(line, name),
-                    Needle::Text(text) => line.contains(text),
+                    // A nested rule declares a name its line does not spell:
+                    // `&__title` under `.card` is where `card__title` is.
+                    Needle::Text(text) => {
+                        line.contains(text)
+                            || declared.iter().any(|&(at, name)| at == *offset as u32 + 1 && name == bare)
+                    }
                     Needle::Pattern(pattern) => pattern.is_match(line),
                 })
                 .map(|(offset, line)| {
                     let number = offset as u32 + 1;
-                    let declares = declared.iter().any(|&(at, name)| at == number && name == symbol);
+                    let declares = declared.iter().any(|&(at, name)| at == number && (name == symbol || name == bare));
                     let inside = declared
                         .iter()
                         .filter(|&&(at, name)| at <= number && name != symbol)

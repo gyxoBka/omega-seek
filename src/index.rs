@@ -83,7 +83,7 @@ impl std::fmt::Debug for Index {
 const NAME_WEIGHT: f32 = 3.0;
 const PATH_WEIGHT: f32 = 2.0;
 const MAX_FILE_BYTES: u64 = 1 << 20;
-const MAX_NAMES: usize = 32;
+const MAX_NAMES: usize = 96;
 /// What opens a block without declaring anything.
 const CONTROL: &[&str] = &[
     "else", "switch", "catch", "do", "try", "with", "await", "throw", "match", "loop", "when",
@@ -239,7 +239,7 @@ impl Index {
 
 /// Bumped whenever chunking, tokenizing, naming or embedding changes what a
 /// file is read as: an older cache is then ignored rather than trusted.
-const STORE_VERSION: u32 = 6;
+const STORE_VERSION: u32 = 9;
 
 /// Whether the cache describes exactly the tree that was walked.
 fn matches(cache: &HashMap<String, CachedFile>, walked: &Walked) -> bool {
@@ -386,7 +386,7 @@ fn assemble(
                 kind: if tests { Kind::Test } else { *kind },
                 indexed: true,
                 path_terms,
-                drafts: draft_file(&tokenizer, model.as_ref(), &text),
+                drafts: draft_file(&tokenizer, model.as_ref(), relative, &text),
             })
         })
         .collect();
@@ -504,13 +504,21 @@ fn assemble(
     }
 }
 
-fn draft_file(tokenizer: &Tokenizer, model: Option<&StaticModel>, text: &str) -> Vec<Draft> {
+fn draft_file(tokenizer: &Tokenizer, model: Option<&StaticModel>, relative: &str, text: &str) -> Vec<Draft> {
     let lines: Vec<&str> = text.lines().collect();
+    let syntax = syntax_of(relative, &lines);
+    let styled = styled_names(&lines, &syntax);
     chunk(&lines)
         .into_iter()
         .map(|span| {
             let body = lines[span.start..span.end].join("\n");
-            let (names, name_lines) = names_in(&lines[span.start..span.end], span.start as u32 + 1);
+            let (names, name_lines) =
+                names_in(
+                &lines[span.start..span.end],
+                &syntax[span.start..span.end],
+                &styled[span.start..span.end],
+                span.start as u32 + 1,
+            );
             let mut weights: HashMap<String, f32> = HashMap::new();
             let mut terms = Vec::new();
             tokenizer.terms(&body, &mut terms);
@@ -575,11 +583,174 @@ fn mostly_imports(lines: &[&str]) -> bool {
     written > 0 && importing * 5 >= written * 3
 }
 
+/// What kind of text a line is, which decides what declaring looks like in it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Syntax {
+    Code,
+    /// CSS and its dialects: a rule declares its selector, and there are
+    /// mixins, keyframes, variables and custom properties.
+    Sheet,
+    /// HTML outside its scripts and styles: an element with an `id` is what
+    /// the rest of the code refers to.
+    Markup,
+}
+
+/// The syntax of every line of a file, from its extension and, where one file
+/// holds several -- a page, a single-file component -- from its `<style>` and
+/// `<script>` sections.
+fn syntax_of(relative: &str, lines: &[&str]) -> Vec<Syntax> {
+    let extension = relative.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+    let outside = match extension.as_str() {
+        "css" | "scss" | "less" | "pcss" | "postcss" => return vec![Syntax::Sheet; lines.len()],
+        "html" | "htm" => Syntax::Markup,
+        "vue" | "svelte" | "astro" => Syntax::Code,
+        _ => return vec![Syntax::Code; lines.len()],
+    };
+    let mut current = outside;
+    lines
+        .iter()
+        .map(|line| {
+            let line = line.trim_start();
+            if line.starts_with("</style") || line.starts_with("</script") {
+                current = outside;
+            } else if line.starts_with("<style") && !line.contains("</style") {
+                current = Syntax::Sheet;
+                return outside;
+            } else if line.starts_with("<script") && !line.contains("</script") {
+                current = Syntax::Code;
+                return outside;
+            }
+            current
+        })
+        .collect()
+}
+
+/// What a line of a stylesheet declares: the first class or id of a rule's
+/// selector (else its element), a mixin, a function, keyframes, a placeholder,
+/// a top-level variable, a custom property. Hyphens belong to these names.
+fn declared_in_sheet(line: &str) -> Option<&str> {
+    static AT_RULE: OnceLock<Regex> = OnceLock::new();
+    static VARIABLE: OnceLock<Regex> = OnceLock::new();
+    static HOOK: OnceLock<Regex> = OnceLock::new();
+    static ELEMENT: OnceLock<Regex> = OnceLock::new();
+    let at_rule = AT_RULE.get_or_init(|| {
+        Regex::new(r"^@(?:mixin|function|keyframes|-webkit-keyframes)\s+([A-Za-z_][\w-]*)").expect("a valid regex")
+    });
+    // `$gap: 8px` where a file declares it, `--gap: 8px` wherever it is set.
+    let variable = VARIABLE
+        .get_or_init(|| Regex::new(r"^(?:(\$[A-Za-z_][\w-]*)|\s+(--[A-Za-z_][\w-]*)|(--[A-Za-z_][\w-]*))\s*:").expect("a valid regex"));
+    let hook = HOOK.get_or_init(|| Regex::new(r"[.#%]([A-Za-z_][\w-]*)").expect("a valid regex"));
+    let element = ELEMENT.get_or_init(|| Regex::new(r"^:{0,2}([A-Za-z][\w-]*)").expect("a valid regex"));
+
+    let trimmed = line.trim();
+    if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+        return None;
+    }
+    if let Some(found) = at_rule.captures(trimmed) {
+        return found.get(1).map(|name| name.as_str());
+    }
+    if let Some(found) = variable.captures(line) {
+        return found.iter().skip(1).flatten().next().map(|name| name.as_str());
+    }
+    // A rule opens a block; `@media (...) {` and `@include x {` open one too
+    // and declare nothing.
+    if trimmed.starts_with('@') {
+        return None;
+    }
+    // The selector is what precedes the brace, whether the rule goes on below
+    // or is written out on this one line: `.chip { padding: 0 8px; }`.
+    let (selector, _) = trimmed.split_once('{')?;
+    let selector = selector.trim_end();
+    // `font: {` is a nested property and `width: calc(#{$gap})` a value; a
+    // selector has no `: ` in it, only `:hover`.
+    if selector.is_empty() || selector.ends_with([':', '#']) || selector.contains(": ") || selector.contains(';') {
+        return None;
+    }
+    hook.captures(selector)
+        .or_else(|| element.captures(selector))
+        .and_then(|found| found.get(1))
+        .map(|name| name.as_str())
+        // The steps of an animation are not what a stylesheet declares.
+        .filter(|name| !matches!(*name, "from" | "to"))
+}
+
+/// What each line of a file declares where that is not code: a stylesheet's
+/// names, a page's ids. Read over the whole file, because a nested rule is
+/// named by the rules it sits in: under `.card`, `&__title` declares
+/// `card__title` -- the name the markup uses and no search by text can find.
+fn styled_names(lines: &[&str], syntax: &[Syntax]) -> Vec<Option<String>> {
+    // The rules a line sits in, by indentation, innermost last.
+    let mut within: Vec<(usize, String)> = Vec::new();
+    lines
+        .iter()
+        .zip(syntax)
+        .map(|(line, syntax)| match syntax {
+            Syntax::Code => None,
+            Syntax::Markup => declared_in_markup(line).map(str::to_owned),
+            Syntax::Sheet => {
+                let trimmed = line.trim_start();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                let indent = line.len() - trimmed.len();
+                while within.last().is_some_and(|(at, _)| *at >= indent) {
+                    within.pop();
+                }
+                let opens = trimmed.trim_end().ends_with('{');
+                let name = match trimmed.strip_prefix('&') {
+                    Some(rest) if opens => {
+                        let suffix: String =
+                            rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '-')).collect();
+                        match within.last() {
+                            Some((_, parent)) if !suffix.is_empty() => Some(format!("{parent}{suffix}")),
+                            _ => None,
+                        }
+                    }
+                    Some(_) => None,
+                    None => declared_in_sheet(line).map(str::to_owned),
+                };
+                if opens {
+                    // `&:hover` and `@media` name nothing, and what is nested
+                    // in them still belongs to the rule around them.
+                    let carried = name.clone().or_else(|| within.last().map(|(_, name)| name.clone()));
+                    if let Some(carried) = carried {
+                        within.push((indent, carried));
+                    }
+                }
+                name
+            }
+        })
+        .collect()
+}
+
+/// The `id` an element is given, which is how scripts and styles refer to it.
+fn declared_in_markup(line: &str) -> Option<&str> {
+    static ID: OnceLock<Regex> = OnceLock::new();
+    let id = ID.get_or_init(|| Regex::new(r#"\sid=["']([A-Za-z_][\w-]*)["']"#).expect("a valid regex"));
+    id.captures(line).and_then(|found| found.get(1)).map(|name| name.as_str())
+}
+
 /// The identifiers a run of lines declares, and the line of each.
-fn names_in(lines: &[&str], first_line: u32) -> (Vec<String>, Vec<u32>) {
+fn names_in(
+    lines: &[&str],
+    syntax: &[Syntax],
+    styled: &[Option<String>],
+    first_line: u32,
+) -> (Vec<String>, Vec<u32>) {
     let mut names: Vec<String> = Vec::new();
     let mut name_lines = Vec::new();
     for (offset, line) in lines.iter().enumerate() {
+        if syntax.get(offset).is_some_and(|syntax| *syntax != Syntax::Code) {
+            let found = styled.get(offset).and_then(Option::as_ref);
+            if let Some(name) = found.filter(|name| !names.contains(name)) {
+                names.push(name.clone());
+                name_lines.push(first_line + offset as u32);
+                if names.len() == MAX_NAMES {
+                    break;
+                }
+            }
+            continue;
+        }
         let next = lines[offset + 1..].iter().map(|line| line.trim()).find(|line| !line.is_empty());
         let name = match declared_name(line, next) {
             Some(name) => name.to_owned(),
@@ -803,7 +974,7 @@ fn kind_of(relative: &Path) -> Option<Kind> {
         | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "cs" | "rb" | "php" | "swift" | "scala"
         | "sh" | "bash" | "ps1" | "sql" | "lua" | "dart" | "ex" | "exs" | "vue" | "svelte" | "astro"
         | "zig" | "hs" | "ml" | "clj" | "r" | "m" | "mm" | "pl" | "proto" | "graphql" | "css"
-        | "scss" | "html" => Kind::Code,
+        | "scss" | "sass" | "less" | "styl" | "pcss" | "postcss" | "html" | "htm" => Kind::Code,
         "md" | "mdx" | "rst" | "txt" | "adoc" => Kind::Docs,
         "json" | "toml" | "yaml" | "yml" | "ini" | "xml" | "cfg" | "conf" | "env" => Kind::Config,
         _ => return None,
@@ -850,10 +1021,80 @@ mod tests {
             "    return null_node;",
             "}",
         ];
-        assert_eq!(names_in(&definition, 314), (vec!["kt_find_extension_receiver".to_owned()], vec![314]));
+        assert_eq!(names_in(&definition, &[], &[], 314), (vec!["kt_find_extension_receiver".to_owned()], vec![314]));
         // The same, ending in `;`, is a prototype and declares nothing here.
         let prototype = ["int cbm_store_upsert(cbm_store_t *store, const cbm_node_t *node,", "                     int flags);"];
-        assert_eq!(names_in(&prototype, 1).0, Vec::<String>::new());
+        assert_eq!(names_in(&prototype, &[], &[], 1).0, Vec::<String>::new());
+    }
+
+    #[test]
+    fn what_a_stylesheet_and_a_page_declare() {
+        let sheet = [
+            "$grid-gap: 8px;",                       // 1
+            "@mixin truncate($lines) {",             // 2
+            "  overflow: hidden;",                   // 3
+            "}",                                     // 4
+            ".card {",                               // 5
+            "  --card-radius: 4px;",                 // 6
+            "  &__title {",                          // 7
+            "    font: {",                           // 8
+            "      weight: 600;",                    // 9
+            "    }",                                 // 10
+            "    &--active {",                       // 11
+            "      color: red;",                     // 12
+            "    }",                                 // 13
+            "  }",                                   // 14
+            "  &:hover {",                           // 15
+            "    .card__icon, .other {",             // 16
+            "    }",                                 // 17
+            "  }",                                   // 18
+            "  @media (min-width: 600px) {",         // 19
+            "    &__body {",                         // 20
+            "    }",                                 // 21
+            "  }",                                   // 22
+            "}",                                     // 23
+            "@keyframes fade-in {",                  // 24
+            "  from {",                              // 25
+            "  }",                                   // 26
+            "}",                                     // 27
+            ":root {",                               // 28
+            "#site-header > nav {",                  // 29
+            "  width: calc(#{$grid-gap} * 2);",      // 30
+            "}",                                     // 31
+            ".chip { padding: 0 8px; }",             // 32
+        ];
+        let syntax = super::syntax_of("theme/card.scss", &sheet);
+        let styled = super::styled_names(&sheet, &syntax);
+        let (names, lines) = names_in(&sheet, &syntax, &styled, 1);
+        let declared: Vec<(&str, u32)> = names.iter().map(String::as_str).zip(lines).collect();
+        assert_eq!(
+            declared,
+            [
+                ("$grid-gap", 1),
+                ("truncate", 2),
+                ("card", 5),
+                ("--card-radius", 6),
+                ("card__title", 7),
+                ("card__title--active", 11),
+                ("card__icon", 16),
+                ("card__body", 20),
+                ("fade-in", 24),
+                ("root", 28),
+                ("site-header", 29),
+                ("chip", 32),
+            ]
+        );
+
+        // A component is code, except between its style tags; a page is markup
+        // outside its scripts and styles.
+        let component = ["<script setup>", "const open = ref(false)", "</script>", "<style scoped>", ".menu {", "}", "</style>"];
+        let syntax = super::syntax_of("Menu.vue", &component);
+        let styled = super::styled_names(&component, &syntax);
+        assert_eq!(names_in(&component, &syntax, &styled, 1).0, ["open", "menu"]);
+        let page = ["<main id=\"app\">", "<script>", "function boot() {", "}", "</script>", "</main>"];
+        let syntax = super::syntax_of("index.html", &page);
+        let styled = super::styled_names(&page, &syntax);
+        assert_eq!(names_in(&page, &syntax, &styled, 1).0, ["app", "boot"]);
     }
 
     #[test]

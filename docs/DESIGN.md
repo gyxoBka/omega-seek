@@ -46,6 +46,17 @@ spelling. A `const` inside a body counts only when it is a function or a
 constant; a statement (`switch len(x) {`) never counts. One table-driven test
 covers C, Rust, TypeScript, Go, Python and PHP.
 
+A stylesheet (CSS, SCSS, Less, and the `<style>` section of a component or a
+page) declares differently, so its lines are read differently: a rule declares
+the first class or id of its selector, and there are mixins, functions,
+keyframes, placeholders, top-level `$variables` and `--custom-properties`.
+Hyphens belong to these names, in a query too. A nested rule is named by the
+rules it sits in, read off the indentation: under `.card`, `&__title` declares
+`card__title` -- the name the markup uses, which no search by text can find in
+the stylesheet. In HTML an element's `id` is its name. On 54 probes written for
+the stylesheets of three private repositories (span R@1, before -> after):
+0.33 -> 0.83, 0.50 -> 0.75, 0.33 -> 0.67, with the code probes unchanged.
+
 ## Index and cache
 
 Built in memory at start. The disk is the only source of truth: before every

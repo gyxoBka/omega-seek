@@ -178,6 +178,7 @@ pub fn search(index: &Index, query: &str, options: &Options) -> Vec<Hit> {
         .into_iter()
         .filter(|word| alone || word.contains('_') || word.chars().skip(1).any(char::is_uppercase))
         .map(str::to_lowercase)
+        .chain(hyphenated(query).map(str::to_lowercase))
         .collect();
     let mut hits: Vec<Hit> = Vec::new();
     for (id, chunk) in index.chunks.iter().enumerate() {
@@ -588,11 +589,21 @@ pub fn nothing_indexed(index: &Index) -> String {
     )
 }
 
+/// The names in a query that are spelled with hyphens, as a stylesheet spells
+/// its own: `.btn-primary`, `#site-header`, `--color-accent`, `$grid-gap`.
+fn hyphenated(query: &str) -> impl Iterator<Item = &str> {
+    query
+        .split_whitespace()
+        .map(|word| word.trim_start_matches(['.', '#', '%']).trim_end_matches([',', ':', ';', '{']))
+        .filter(|word| word.contains('-') && word.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '$')))
+}
+
 /// The line on which `hit` declares an identifier the query names.
 fn declared_line<'a>(index: &'a Index, hit: &Hit, query: &str) -> Option<(&'a str, u32)> {
     let words: Vec<&str> = query
         .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
         .filter(|word| !word.is_empty())
+        .chain(hyphenated(query))
         .collect();
     let file = index.chunks[hit.chunk].file;
     index

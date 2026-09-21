@@ -455,7 +455,16 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
     let terms = index.tokenizer.query_terms(query);
     let (shown, confident) = present(hits);
     let mut out = String::new();
-    if !confident {
+    // A lone name that nothing bears still gathers answers by the words it is
+    // made of, and they read as if the name had been found.
+    let lone_name = !query.trim().is_empty() && query.trim().chars().all(|c| c.is_alphanumeric() || c == '_');
+    if lone_name && crate::usages::count(index, query.trim()).1 == 0 {
+        let _ = write!(
+            out,
+            "Nothing in the code is named `{}` (whole word, case-sensitive). Closest by its words:\n\n",
+            query.trim()
+        );
+    } else if !confident {
         out.push_str(
             "Low confidence: few of the query's words occur together anywhere. Rephrase with the \
              technical terms the code would use before trusting or reading these.\n\n",
@@ -512,6 +521,11 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
         };
         for (offset, line) in lines.iter().enumerate().skip(first).take(count) {
             let _ = writeln!(out, "{:>5}| {}", start + offset, line.trim_end());
+        }
+        // A heading names the whole range and the lines under it may be a part:
+        // say so, or the part is taken for the whole and the rest goes unread.
+        if declared.is_none() && lines.len() > count {
+            let _ = writeln!(out, "       ... {count} of {} lines shown", lines.len());
         }
         if declared.is_some() {
             if lines.len() > count {
@@ -622,28 +636,41 @@ fn best_window(index: &Index, terms: &[String], lines: &[&str], size: usize) -> 
         return 0;
     }
     let mut buffer = Vec::new();
-    let matches: Vec<usize> = lines
+    // Which of the query's terms each line speaks, as bits.
+    let spoken: Vec<u64> = lines
         .iter()
         .map(|line| {
             buffer.clear();
             index.tokenizer.terms(line, &mut buffer);
-            terms.iter().filter(|term| buffer.contains(term)).count()
+            terms
+                .iter()
+                .take(64)
+                .enumerate()
+                .filter(|(_, term)| buffer.contains(term))
+                .fold(0u64, |bits, (bit, _)| bits | 1 << bit)
         })
         .collect();
-    let mut sum: usize = matches[..size].iter().sum();
-    let (mut best, mut best_sum) = (0, sum);
+    // Different terms first, then how often: twelve lines of `cart` say less
+    // about `cart discount` than the few where both meet.
+    let worth = |start: usize| {
+        let window = &spoken[start..start + size];
+        let distinct = window.iter().fold(0u64, |bits, line| bits | line).count_ones();
+        let total: u32 = window.iter().map(|line| line.count_ones()).sum();
+        (distinct, total)
+    };
+    let (mut best, mut best_worth) = (0, worth(0));
     for start in 1..=lines.len() - size {
-        sum = sum + matches[start + size - 1] - matches[start - 1];
-        if sum > best_sum {
-            (best, best_sum) = (start, sum);
+        let worth = worth(start);
+        if worth > best_worth {
+            (best, best_worth) = (start, worth);
         }
     }
     // The earliest best window ends on its matches; one that opens just above
     // the first of them shows what follows a declaration instead of what
     // precedes it, when that loses nothing.
-    if let Some(first) = (best..best + size).find(|&line| matches[line] > 0) {
+    if let Some(first) = (best..best + size).find(|&line| spoken[line] != 0) {
         let later = first.saturating_sub(2).min(lines.len() - size);
-        if matches[later..later + size].iter().sum::<usize>() >= best_sum {
+        if worth(later) >= best_worth {
             return later;
         }
     }

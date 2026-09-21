@@ -80,7 +80,6 @@ printf '\n  omega install\n\n'
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) ASSET=omega-x86_64-unknown-linux-gnu.tar.gz ;;
     Darwin-arm64) ASSET=omega-aarch64-apple-darwin.tar.gz ;;
-    Darwin-x86_64) ASSET=omega-x86_64-apple-darwin.tar.gz ;;
     *) ASSET= ;;
 esac
 

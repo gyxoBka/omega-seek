@@ -145,4 +145,5 @@ repositories, baseline 0.632 at the time):
 - The index lives in memory; the largest repository measured is 116k lines of
   first-party code.
 - Stemming is English and Russian only.
-- Releases, the PATH step of `install.ps1`, Linux and macOS are untested.
+- Linux and macOS are covered by the release workflow's tests only; nobody has
+  used omega there. There is no Intel macOS build.

@@ -68,10 +68,14 @@ if ($Uninstall) {
     }
     if (-not $NoPath) { Remove-FromUserPath $InstallDir }
     # Only the files omega put there; the directory goes when nothing else is in it.
-    foreach ($file in $Exe, "$Exe.old") {
-        if (Test-Path $file) {
-            Remove-Item -Force $file -Confirm:$false
-            Write-Host "  binary       removed $file"
+    $binaries = @(Get-ChildItem -Path $InstallDir -Filter 'omega.exe*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq 'omega.exe' -or $_.Name -like 'omega.exe.old*' })
+    foreach ($file in $binaries) {
+        Remove-Item -Force $file.FullName -ErrorAction SilentlyContinue -Confirm:$false
+        if (Test-Path $file.FullName) {
+            Write-Host "  binary       $($file.FullName) is open in a running session; delete it once that session ends"
+        } else {
+            Write-Host "  binary       removed $($file.FullName)"
         }
     }
     if ((Test-Path $InstallDir) -and -not (Get-ChildItem -Force $InstallDir)) {
@@ -100,6 +104,9 @@ if ($PSScriptRoot) {
     }
 }
 $staging = $null
+# What was downloaded goes whether or not the install succeeds: a failed one
+# used to leave the archive and its unpacked copy in the temp directory.
+try {
 if (-not $source) {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         throw "No omega.exe beside this script and no GitHub CLI to download one. Install gh (https://cli.github.com), run 'gh auth login', and try again -- or download $Asset from the repository's Releases page, unpack it, and run install.ps1 from there."
@@ -119,17 +126,26 @@ if (-not $source) {
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 if (-not (Test-SameDirectory (Split-Path $source) $InstallDir)) {
     # A running MCP server keeps the old binary open. Windows lets an open file
-    # be renamed but not overwritten, so the old one steps aside.
+    # be renamed but neither overwritten nor deleted, so the old one steps
+    # aside -- under a name of its own: the one that stepped aside at the last
+    # update may still be open in a session that has been running since.
     if (Test-Path $Exe) {
-        $aside = "$Exe.old"
-        if (Test-Path $aside) { Remove-Item -Force $aside -ErrorAction SilentlyContinue -Confirm:$false }
-        Rename-Item $Exe $aside
+        Rename-Item $Exe "$(Split-Path -Leaf $Exe).old-$([DateTime]::UtcNow.Ticks)"
     }
     Copy-Item $source $Exe
-    Remove-Item -Force "$Exe.old" -ErrorAction SilentlyContinue -Confirm:$false
+    # Whatever no server holds any more goes now; the rest at a later update.
+    Get-ChildItem -Path $InstallDir -Filter 'omega.exe.old*' | ForEach-Object {
+        Remove-Item -Force $_.FullName -ErrorAction SilentlyContinue -Confirm:$false
+    }
 }
 Write-Host "  binary       $Exe"
-if ($staging) { Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue -Confirm:$false }
+} finally {
+    if ($staging) { Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue -Confirm:$false }
+    # And what earlier failed installs left behind.
+    Get-ChildItem -Path ([IO.Path]::GetTempPath()) -Directory -Filter 'omega-install-*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-1) } |
+        ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue -Confirm:$false }
+}
 
 if (-not $NoPath) { Add-ToUserPath $InstallDir }
 

@@ -1,4 +1,4 @@
-//! The MCP face: `search`, `usages` and `outline` over stdio, line-delimited JSON-RPC.
+//! The MCP face: `search`, `usages`, `grep` and `outline` over stdio, line-delimited JSON-RPC.
 //!
 //! The server is started in one repository and answers about it unless a call
 //! says otherwise. What keeps an agent from being answered about the wrong
@@ -12,38 +12,44 @@ use crate::search::{Content, Options, render, search};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-const DESCRIPTION: &str = "Search this repository's code. Use INSTEAD of grep/glob/find whenever you \
-need to locate where something is implemented, defined or handled. Returns the best matching code \
-blocks as `path:start-end  declared names` followed by the source lines with line numbers, so the \
-result can be read or edited directly without another lookup.\n\
-Query tips: write what the code does or is called, using words likely to appear in identifiers and \
-comments (e.g. `retry backoff http client`, `parse config file`, `UserRepository save`). An exact \
-identifier returns its whole declaration and how widely it is used. If the first answer misses, \
-rephrase with synonyms rather than falling back to grep.";
+// Every session pays for these words before it asks anything: each says what
+// the tool is for, what it replaces and what comes back, once.
 
-const USAGES_DESCRIPTION: &str = "Every place an identifier is declared and used -- or every place \
-a literal text is written. Use INSTEAD of grep. For an identifier (`ValidateToken`, `Session::refresh`): \
-whole-word, case-sensitive matches in code, comment lines dropped, the declaration first; use it \
-for callers, references and the impact of a change. For anything else (an error message, a route \
-like `/api/users`, a config key, any phrase, in any language): exact matches as written, in code \
-and configuration. Either way each line is labelled with the [declaration] it sits in, files are \
-grouped, tests come last, and output is bounded. Matching is by name, not by type.";
+const DESCRIPTION: &str = "Find code in this repository by what it does or what it is called. Use \
+INSTEAD of grep/glob/find to locate where something is implemented, defined or handled. Answers \
+are `path:start-end  declared names` and the numbered source lines: read or edit from them without \
+another lookup. Ask in 3-6 words the code itself would use (`retry backoff http client`, \
+`UserRepository save`); an exact identifier returns its whole declaration and how widely it is \
+used. After a miss rephrase with synonyms, do not fall back to grep.";
 
-const OUTLINE_DESCRIPTION: &str = "The table of contents of a file or directory. For a file: every \
-declaration with its line number and signature, nesting kept. For a directory: its files with \
-what each declares, and its subdirectories. Call this BEFORE reading a file you have not seen: \
-it costs a few dozen lines instead of the whole file, tells you whether the file matters, and \
-gives the line to start reading from.";
+const USAGES_DESCRIPTION: &str = "Where an identifier is declared and used, or where a literal text \
+is written. Use INSTEAD of grep for callers, references and the impact of a change. An identifier \
+(`ValidateToken`, `Session::refresh`) matches as a whole word, case-sensitively, in code, comment \
+lines dropped, the declaration first. Anything else (an error message, a route like `/api/users`, \
+a config key, a dotted name the code writes in quotes) matches exactly as written, in code and \
+configuration. Each line carries the [declaration] it sits in; files grouped, tests last, output \
+bounded. Matching is by name, not by type.";
 
-const ROOT_DESCRIPTION: &str = "Search this directory instead of the repository omega was started \
-in: a git worktree you are working in, a sibling repository (`../backend`), or a parent holding \
-several repositories (`..`). Absolute, or relative to omega's repository. Omit it only when you \
-are working in the repository omega was started in.";
+const GREP_DESCRIPTION: &str = "Regular-expression search over this repository's own source. Use \
+INSTEAD of grep, rg or a built-in Grep tool, which also walk node_modules, vendor, build output \
+and generated files. One line at a time, case-sensitive; `(?i)` ignores case. Each matching line \
+carries its number and the [declaration] it sits in; files grouped, tests last, output bounded. \
+For a name or a literal text use `usages`; to find code by what it does, `search`.";
 
-/// How long an index is trusted before its tree is looked at again.
-const FRESH_FOR: Duration = Duration::from_secs(2);
+const OUTLINE_DESCRIPTION: &str = "The table of contents of a file (every declaration with its \
+line and signature, nesting kept) or of a directory (its files with what each declares, and its \
+subdirectories). Call BEFORE reading a file you have not seen: a few dozen lines instead of the \
+whole file, and the line to start reading from.";
+
+/// Said in full once, where an agent's first call usually goes, and at
+/// connection (`instructions`); the other tools only recall it.
+const ROOT_DESCRIPTION: &str = "Look in this directory instead of omega's repository: the git \
+worktree you work in, a sibling repository (`../backend`), a parent of several (`..`). Absolute, \
+or relative to omega's repository. Omit only when you work in omega's own repository.";
+const ROOT_RECALLED: &str = "Another directory to look in, as in `search`: your git worktree, `../backend`, `..`.";
+
 /// Roots kept indexed at once; the least recently asked about makes room.
 const OPEN_ROOTS: usize = 4;
 /// A root with more indexable files than this was almost certainly a mistake.
@@ -53,7 +59,6 @@ struct Open {
     root: PathBuf,
     /// Taken out while it is being refreshed, which consumes it.
     index: Option<Index>,
-    checked: Instant,
     used: Instant,
 }
 
@@ -91,7 +96,6 @@ impl Server {
                 self.open.push(Open {
                     root: root.to_path_buf(),
                     index: Some(index),
-                    checked: Instant::now(),
                     used: Instant::now(),
                 });
                 self.open.len() - 1
@@ -99,10 +103,11 @@ impl Server {
         };
         let open = &mut self.open[position];
         open.used = Instant::now();
-        if open.checked.elapsed() > FRESH_FOR {
-            open.index = open.index.take().map(Index::refreshed);
-            open.checked = Instant::now();
-        }
+        // Every answer is about the tree as it is on disk now: an agent asks
+        // about the file it has just edited, and a person edits without telling
+        // anyone. Looking costs ~10 ms on a few thousand files, and only files
+        // whose size or time changed are read again.
+        open.index = open.index.take().map(Index::refreshed);
         open.index.as_ref().ok_or_else(|| "the index was lost while refreshing".to_owned())
     }
 }
@@ -163,6 +168,7 @@ fn instructions(home: &Path) -> String {
 
 fn tools() -> Value {
     let root = json!({"type": "string", "description": ROOT_DESCRIPTION});
+    let recalled = json!({"type": "string", "description": ROOT_RECALLED});
     json!([
         {
             "name": "search",
@@ -171,8 +177,8 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "What the code does, or an identifier."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Results to return (default 8)."},
-                    "path": {"type": "string", "description": "Only files whose path contains this text."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Results (default 8)."},
+                    "path": {"type": "string", "description": "Only files whose path contains this."},
                     "content": {"type": "string", "enum": ["code", "docs", "config", "all"], "description": "What to search (default code)."},
                     "root": root,
                 },
@@ -185,12 +191,26 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "symbol": {"type": "string", "description": "An identifier (`ValidateToken`, `Session::refresh`), or literal text to find as written (`\"/api/users\"`, `connection refused`)."},
-                    "path": {"type": "string", "description": "Only files whose path contains this text."},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Lines to print (default 40)."},
-                    "root": root,
+                    "symbol": {"type": "string", "description": "An identifier, or literal text as written."},
+                    "path": {"type": "string", "description": "Only files whose path contains this."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Lines (default 40)."},
+                    "root": recalled,
                 },
                 "required": ["symbol"],
+            },
+        },
+        {
+            "name": "grep",
+            "description": GREP_DESCRIPTION,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Rust/RE2 syntax, no look-around or backreferences: `func \\w+Handler\\(`, `(?i)todo|fixme`."},
+                    "path": {"type": "string", "description": "Only files whose path contains this."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Lines (default 40)."},
+                    "root": recalled,
+                },
+                "required": ["pattern"],
             },
         },
         {
@@ -199,8 +219,8 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "A file or directory, relative to the repository root; a bare file name works when it is unique. Empty for the root."},
-                    "root": root,
+                    "path": {"type": "string", "description": "A file or directory, relative to the root; a bare file name works when unique. Empty for the root."},
+                    "root": recalled,
                 },
                 "required": ["path"],
             },
@@ -219,8 +239,8 @@ fn failure(text: String) -> Value {
 fn call(server: &mut Server, params: &Value) -> Value {
     let tool = params["name"].as_str().unwrap_or_default();
     let arguments = &params["arguments"];
-    if !matches!(tool, "search" | "usages" | "outline") {
-        return failure(format!("Unknown tool `{tool}`. The tools are `search`, `usages` and `outline`."));
+    if !matches!(tool, "search" | "usages" | "grep" | "outline") {
+        return failure(format!("Unknown tool `{tool}`. The tools are `search`, `usages`, `grep` and `outline`."));
     }
     let resolved = match roots::resolve(&server.home, arguments["root"].as_str(), arguments["path"].as_str()) {
         Ok(resolved) => resolved,
@@ -268,6 +288,19 @@ fn call(server: &mut Server, params: &Value) -> Value {
                 options.limit = (limit as usize).clamp(1, 200);
             }
             crate::usages::usages(index, symbol, &options)
+        }
+        "grep" => {
+            let Some(pattern) = arguments["pattern"].as_str() else {
+                return failure("`pattern` is required.".to_owned());
+            };
+            let mut options = crate::usages::Options {
+                path: resolved.within.clone(),
+                ..Default::default()
+            };
+            if let Some(limit) = arguments["limit"].as_u64() {
+                options.limit = (limit as usize).clamp(1, 200);
+            }
+            crate::usages::grep(index, pattern, &options)
         }
         _ => crate::outline::outline(index, resolved.within.as_deref().unwrap_or_default()),
     };

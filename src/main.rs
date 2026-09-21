@@ -7,6 +7,7 @@ const USAGE: &str = "\
 omega search <query> [--root DIR] [-k N] [--content code|docs|config|all] [--path TEXT] [--lines N]
 omega outline <file-or-directory> [--root DIR]
 omega usages <symbol> [--root DIR] [-k N] [--path TEXT]
+omega grep <regex> [--root DIR] [-k N] [--path TEXT]
 omega eval <probes.tsv>... [--root DIR] [--limit N] [--hits N]
 omega mcp [--root DIR]
 omega model install
@@ -82,7 +83,7 @@ fn run() -> Result<(), String> {
     // the agent would conclude the code does not exist.
     let reads_a_tree = matches!(
         command.as_str(),
-        "search" | "outline" | "usages" | "eval" | "mcp"
+        "search" | "outline" | "usages" | "grep" | "eval" | "mcp"
     );
     if reads_a_tree && !root.is_dir() {
         return Err(format!("--root {} is not a directory", root.display()));
@@ -111,7 +112,7 @@ fn run() -> Result<(), String> {
             print!("{}", omega::outline::outline(&index, &positional.join(" ")));
             Ok(())
         }
-        "usages" => {
+        "usages" | "grep" => {
             let index = Index::open(&root, None)?;
             let mut wanted = omega::usages::Options {
                 path: options.path.clone(),
@@ -120,10 +121,13 @@ fn run() -> Result<(), String> {
             if limit_given {
                 wanted.limit = options.limit;
             }
-            print!(
-                "{}",
-                omega::usages::usages(&index, &positional.join(" "), &wanted)
-            );
+            let asked = positional.join(" ");
+            let answer = if command == "grep" {
+                omega::usages::grep(&index, &asked, &wanted)
+            } else {
+                omega::usages::usages(&index, &asked, &wanted)
+            };
+            print!("{answer}");
             Ok(())
         }
         "eval" => eval(&root, model.as_deref(), &positional, eval_limit, eval_hits),

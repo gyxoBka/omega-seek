@@ -13,12 +13,13 @@ internal/auth/session.go:31-78  Session, Expired, ValidateToken, refresh
    ...
 ```
 
-Three tools, 2 KB of schema in the agent's context:
+Four tools, 4 KB of schema in the agent's context:
 
 | tool | answers | instead of |
 |---|---|---|
 | `search` | where something is implemented; an exact identifier returns its whole declaration | grep + read |
 | `usages` | where an identifier is declared and used, or where a literal text is written, each line labelled with the function it sits in | grep for a name or a message |
+| `grep` | every line a regular expression matches, in first-party source only, labelled the same way | grep / rg, which also walk dependencies and build output |
 | `outline` | the table of contents of a file or directory, with line numbers | reading a file to see what is in it |
 
 Any language works: files are cut along indentation and block boundaries, not
@@ -93,6 +94,7 @@ From a terminal:
 omega search "retry backoff http client"
 omega usages ValidateToken
 omega usages "connection refused"
+omega grep 'func \w+Handler\('
 omega outline src/auth
 ```
 

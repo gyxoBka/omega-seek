@@ -48,10 +48,17 @@ covers C, Rust, TypeScript, Go, Python and PHP.
 
 ## Index and cache
 
-Built in memory at start. Before a query, at most every two seconds, the tree
-is walked again: files whose size and modification time are unchanged are not
-re-read (a no-change check costs ~5 ms on 1000 files, picking up an edited file
-~40 ms). What each file was read as is kept under the user cache directory
+Built in memory at start. The disk is the only source of truth: before every
+answer the tree is walked again, in parallel and asking only source files for
+their size and time, so an answer is never older than the call -- whoever
+edited, an agent a moment ago or a person by hand. Files whose size and
+modification time are unchanged are not re-read. On 2,200 files (12,000 chunks)
+looking costs ~10 ms; picking up an edited file costs ~150 ms, of which reading
+and embedding that one file is the least: ~110 ms rebuilds the postings of the
+whole index from what is cached per file, ~30 ms saves the cache. A file
+watcher was not used: its events arrive after the write they report, can be
+dropped, and differ by platform, so the walk would have to stay as the
+guarantee anyway. What each file was read as is kept under the user cache directory
 (`%LOCALAPPDATA%\omega\index`, `$XDG_CACHE_HOME/omega/index`), one
 file per repository and model; a stale or unreadable cache is ignored and
 deleting the directory is always safe.
@@ -169,4 +176,5 @@ repositories, baseline 0.632 at the time):
   first-party code.
 - Stemming is English and Russian only.
 - Linux and macOS are covered by the release workflow's tests only; nobody has
-  used omega there. There is no Intel macOS build.
+  used omega there. There is no Intel macOS build, and the Apple silicon one
+  is switched off in the release workflow for now.

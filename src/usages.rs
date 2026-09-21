@@ -51,12 +51,17 @@ enum Needle<'a> {
     /// Anything else -- an error message, a route, a config key: the text as
     /// written, wherever it is written.
     Text(&'a str),
+    /// A regular expression, tried on every line of every indexed file: what
+    /// grep is reached for, without the dependencies, build output and
+    /// generated files that grep also walks into.
+    Pattern(&'a regex::Regex),
 }
 
 impl Needle<'_> {
     fn text(&self) -> &str {
         match self {
             Self::Word(text) | Self::Text(text) => text,
+            Self::Pattern(pattern) => pattern.as_str(),
         }
     }
 }
@@ -84,18 +89,79 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
         _ => Needle::Text(asked),
     };
 
+    // `cart.clear` has the shape of `pkg.Validate` and may be neither: the name
+    // of an operation, an event, a config key. Code that writes it in quotes
+    // settles it, and then its last word alone would answer about every `clear`.
+    let qualified = matches!(needle, Needle::Word(name) if name != asked);
+    if qualified {
+        let mut written = collect(index, Needle::Text(asked), options.path.as_deref());
+        if written.iter().flat_map(|file| &file.lines).any(|line| is_quoted(&line.text, asked)) {
+            let mut out = render(&index.label, asked, "Used", &mut written, options);
+            let _ = write!(
+                out,
+                "\nFound as text, since the code writes `{asked}` in quotes; ask for `{}` alone for the identifier.\n",
+                needle.text()
+            );
+            return out;
+        }
+    }
+
     let mut found = collect(index, needle, options.path.as_deref());
     if found.is_empty() {
         return match needle {
+            Needle::Word(name) if qualified => format!(
+                "`{asked}` is not written in quotes anywhere, and there are no whole-word occurrences of `{name}` in code. \
+                 Matching is case-sensitive; use search for a fuzzy lookup."
+            ),
             Needle::Word(name) => format!(
                 "No whole-word occurrences of `{name}` in code. Matching is case-sensitive; use search for a fuzzy lookup."
             ),
             Needle::Text(text) => format!(
                 "No occurrences of `{text}` as written. Matching is exact and case-sensitive; try a shorter fragment, or search."
             ),
+            Needle::Pattern(_) => String::new(),
         };
     }
-    render(&index.label, needle.text(), &mut found, options)
+    let mut out = String::new();
+    if qualified {
+        let _ = writeln!(out, "`{asked}` read as the identifier `{}`.", needle.text());
+    }
+    out.push_str(&render(&index.label, needle.text(), "Used", &mut found, options));
+    out
+}
+
+/// Every line a regular expression matches, in the indexed files only: grep
+/// without the dependencies, build output and generated files grep walks into,
+/// and with what `usages` adds -- the declaration each line sits in, tests
+/// last, a bound on what is printed.
+#[must_use]
+pub fn grep(index: &Index, asked: &str, options: &Options) -> String {
+    if index.files.is_empty() {
+        return crate::search::nothing_indexed(index);
+    }
+    if asked.is_empty() {
+        return "`pattern` is empty.".to_owned();
+    }
+    let pattern = match regex::Regex::new(asked) {
+        Ok(pattern) => pattern,
+        Err(reason) => return format!("`{asked}` is not a regular expression: {reason}"),
+    };
+    let mut found = collect(index, Needle::Pattern(&pattern), options.path.as_deref());
+    if found.is_empty() {
+        return format!(
+            "No line matches /{asked}/ in the indexed files. Lines are matched one at a time, \
+             case-sensitively unless the expression opens with (?i)."
+        );
+    }
+    render(&index.label, &format!("/{asked}/"), "Matched", &mut found, options)
+}
+
+/// Whether `line` writes `text` as a string, or as the head or tail of one.
+fn is_quoted(line: &str, text: &str) -> bool {
+    let quote = |c: char| matches!(c, '"' | '\'' | '`');
+    line.match_indices(text).any(|(at, _)| {
+        line[..at].chars().next_back().is_some_and(quote) || line[at + text.len()..].chars().next().is_some_and(quote)
+    })
 }
 
 /// How many lines other than its declarations name `symbol`, and in how many files.
@@ -128,6 +194,9 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
                 index.tokenizer.terms(&words[1..words.len() - 1].join(" "), &mut terms);
             }
         }
+        // Which words an expression requires is not worth working out for a
+        // scan that takes tens of milliseconds.
+        Needle::Pattern(_) => {}
     }
     let files_of = |term: &String| -> Option<BTreeSet<u32>> {
         let postings = index.postings.get(term)?;
@@ -152,6 +221,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
                 Needle::Word(_) => matches!(entry.kind, Kind::Code | Kind::Test),
                 // A route or a key is as likely to sit in configuration.
                 Needle::Text(_) => entry.kind != Kind::Docs,
+                Needle::Pattern(_) => true,
             };
             searched && path.is_none_or(|wanted| entry.path.contains(wanted))
         })
@@ -178,6 +248,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
                 .filter(|(_, line)| match needle {
                     Needle::Word(name) => !is_comment(line) && has_word(line, name),
                     Needle::Text(text) => line.contains(text),
+                    Needle::Pattern(pattern) => pattern.is_match(line),
                 })
                 .map(|(offset, line)| {
                     let number = offset as u32 + 1;
@@ -204,7 +275,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         .collect()
 }
 
-fn render(label: &str, symbol: &str, found: &mut [FileUsages], options: &Options) -> String {
+fn render(label: &str, symbol: &str, listed: &str, found: &mut [FileUsages], options: &Options) -> String {
     // Code before tests, and within each the files that use it most.
     found.sort_by(|a, b| {
         (a.kind == Kind::Test, std::cmp::Reverse(a.lines.len()), &a.path)
@@ -236,7 +307,7 @@ fn render(label: &str, symbol: &str, found: &mut [FileUsages], options: &Options
             }
         }
     }
-    out.push_str("\nUsed:\n");
+    let _ = write!(out, "\n{listed}:\n");
     let mut unshown: Vec<String> = Vec::new();
     for file in found.iter() {
         let uses: Vec<&Line> = file.lines.iter().filter(|line| !line.declares).collect();
@@ -319,5 +390,13 @@ mod tests {
         assert!(has_word("$this->check();", "check"));
         assert!(!has_word("recheck_all()", "check"));
         assert!(!has_word("ValidateTokenStrict()", "ValidateToken"));
+    }
+
+    #[test]
+    fn a_dotted_name_in_quotes_is_text() {
+        assert!(is_quoted(r#"call("cart.clear", input)"#, "cart.clear"));
+        assert!(is_quoted("| 'cart.clear'", "cart.clear"));
+        assert!(is_quoted(r#"on("cart.clear.done")"#, "cart.clear"));
+        assert!(!is_quoted("cart.clear()", "cart.clear"));
     }
 }

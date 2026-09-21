@@ -186,3 +186,35 @@ fn an_outline_lists_declarations_and_a_directory_lists_files() {
     assert!(omega::outline::outline(&index, "nowhere.rs").starts_with("No indexed file"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_regular_expression_and_a_quoted_name_are_found_in_first_party_files_only() {
+    let root = scratch("grep");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/lib")).unwrap();
+    std::fs::write(
+        root.join("src/cart.ts"),
+        "export function stop() {\n  return call(\"cart.stop\", {});\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("node_modules/lib/index.js"),
+        "function stop() {\n  return call(\"cart.stop\", {});\n}\n",
+    )
+    .unwrap();
+    let index = Index::build(&root, None).unwrap();
+    let options = omega::usages::Options::default();
+
+    let matched = omega::usages::grep(&index, r#"call\("cart\.\w+""#, &options);
+    assert!(matched.contains("1 line in 1 file") && matched.contains("[stop]"), "{matched}");
+    assert!(!matched.contains("node_modules"), "{matched}");
+    assert!(omega::usages::grep(&index, "(", &options).contains("not a regular expression"));
+
+    // An operation's name is the text the code writes, not every `stop`.
+    let named = omega::usages::usages(&index, "cart.stop", &options);
+    assert!(named.contains("`cart.stop`: 1 line") && named.contains("Found as text"), "{named}");
+    let method = omega::usages::usages(&index, "cart.missing", &options);
+    assert!(method.contains("not written in quotes"), "{method}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

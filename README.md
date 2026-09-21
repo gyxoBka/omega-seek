@@ -61,14 +61,12 @@ repository is private, so the GitHub CLI carries the credentials -- run
 
 ```powershell
 # Windows
-$env:OMEGA_REPO = "<owner>/omega"
-gh api repos/$env:OMEGA_REPO/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
+gh api repos/gyxoBka/omega-seek/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
 ```
 
 ```sh
 # Linux / macOS
-export OMEGA_REPO=<owner>/omega
-gh api repos/$OMEGA_REPO/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | sh
+gh api repos/gyxoBka/omega-seek/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | sh
 ```
 
 Without `gh`: download the archive for your platform from Releases, unpack it,

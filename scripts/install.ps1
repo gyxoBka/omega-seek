@@ -9,7 +9,7 @@
   the GitHub CLI -- the repository is private, so `gh auth login` must have
   been done once:
 
-    gh api repos/OWNER/omega/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
+    gh api repos/gyxoBka/omega-seek/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
 
   Running it again updates the binary and changes nothing else.
 
@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\omega'),
-    [string]$Repo = $(if ($env:OMEGA_REPO) { $env:OMEGA_REPO } else { 'OWNER/omega' }),
+    [string]$Repo = $(if ($env:OMEGA_REPO) { $env:OMEGA_REPO } else { 'gyxoBka/omega-seek' }),
     [string]$Version = 'latest',
     [switch]$NoPath,
     [switch]$NoModel,
@@ -103,9 +103,6 @@ $staging = $null
 if (-not $source) {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         throw "No omega.exe beside this script and no GitHub CLI to download one. Install gh (https://cli.github.com), run 'gh auth login', and try again -- or download $Asset from the repository's Releases page, unpack it, and run install.ps1 from there."
-    }
-    if ($Repo -like 'OWNER/*') {
-        throw "Which repository? Pass -Repo owner/omega or set OMEGA_REPO."
     }
     $staging = Join-Path ([IO.Path]::GetTempPath()) "omega-install-$PID"
     New-Item -ItemType Directory -Force $staging | Out-Null

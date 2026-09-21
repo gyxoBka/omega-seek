@@ -7,12 +7,12 @@
 # the GitHub CLI -- the repository is private, so `gh auth login` must have
 # been done once:
 #
-#   gh api repos/OWNER/omega/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | sh
+#   gh api repos/gyxoBka/omega-seek/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | sh
 #
 # Running it again updates the binary and changes nothing else.
 #
 #   --dir DIR       where the binary goes (default ~/.local/bin)
-#   --repo O/R      the GitHub repository (default $OMEGA_REPO)
+#   --repo O/R      the GitHub repository (default $OMEGA_REPO, else gyxoBka/omega-seek)
 #   --version TAG   a release tag (default latest)
 #   --no-path       leave shell profiles alone
 #   --no-model      do not download the model
@@ -21,7 +21,7 @@
 set -eu
 
 DIR="$HOME/.local/bin"
-REPO="${OMEGA_REPO:-OWNER/omega}"
+REPO="${OMEGA_REPO:-gyxoBka/omega-seek}"
 VERSION=latest
 SET_PATH=1
 MODEL=1
@@ -102,7 +102,6 @@ if [ -z "$SOURCE" ]; then
         echo "from the repository's Releases page, unpack it, and run install.sh from there." >&2
         exit 1
     fi
-    case "$REPO" in OWNER/*) echo "Which repository? Pass --repo owner/omega or set OMEGA_REPO." >&2; exit 1 ;; esac
     STAGING=$(mktemp -d)
     echo "  download     $ASSET ($VERSION) from $REPO"
     if [ "$VERSION" = latest ]; then

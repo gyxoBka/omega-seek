@@ -450,19 +450,45 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
         return nothing_indexed(index);
     }
     if hits.is_empty() {
+        // "None here" must not read as "none anywhere".
+        if let Some(path) = &options.path {
+            let anywhere = Options { path: None, ..options.clone() };
+            let outside = search(index, query, &anywhere);
+            if let Some(first) = outside.first() {
+                let file = &index.files[index.chunks[first.chunk].file as usize];
+                return format!(
+                    "No matches under `{path}`, but there are matches elsewhere, first in {}{}. Drop or change `path`.",
+                    index.label, file.path
+                );
+            }
+        }
         return "No matches. Try the words the code itself would use.".to_owned();
     }
     let terms = index.tokenizer.query_terms(query);
-    let (shown, confident) = present(hits);
+    let (mut shown, confident) = present(hits);
     let mut out = String::new();
     // A lone name that nothing bears still gathers answers by the words it is
-    // made of, and they read as if the name had been found.
-    let lone_name = !query.trim().is_empty() && query.trim().chars().all(|c| c.is_alphanumeric() || c == '_');
-    if lone_name && crate::usages::count(index, query.trim()).1 == 0 {
+    // made of, and they read as if the name had been found. Only a chunk that
+    // holds every one of those words is worth offering instead; one that
+    // shares a single common word is a guess about a name that does not exist.
+    let name = query.trim();
+    let lone_name = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if lone_name && !hits[0].declares && crate::usages::count(index, name).1 == 0 {
+        shown.retain(|(hit, _)| hit.coverage + f32::EPSILON >= 1.0);
+        shown.truncate(FULL_SNIPPETS);
+        for (_, detail) in &mut shown {
+            *detail = Detail::Skim;
+        }
+        if shown.is_empty() {
+            return format!(
+                "Nothing in the code is named `{name}` (whole word, case-sensitive), and the words it is \
+                 made of occur together nowhere. Check the spelling, or search by what it does{}.",
+                if options.content == Content::Code { "; `content: \"all\"` also looks in docs and config" } else { "" }
+            );
+        }
         let _ = write!(
             out,
-            "Nothing in the code is named `{}` (whole word, case-sensitive). Closest by its words:\n\n",
-            query.trim()
+            "Nothing in the code is named `{name}` (whole word, case-sensitive). Its words occur together in:\n\n"
         );
     } else if !confident {
         out.push_str(

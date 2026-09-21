@@ -218,3 +218,50 @@ fn a_regular_expression_and_a_quoted_name_are_found_in_first_party_files_only() 
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_wrong_path_is_answered_with_near_names_not_the_whole_directory() {
+    let root = scratch("near");
+    std::fs::create_dir_all(root.join("src/auth")).unwrap();
+    for name in ["session.go", "sessions_store.go", "token.go", "guard.go"] {
+        std::fs::write(root.join("src/auth").join(name), "func Keep() {\n\treturn\n}\n").unwrap();
+    }
+    let index = Index::build(&root, None).unwrap();
+
+    let missed = omega::outline::outline(&index, "src/auth/sesion.go");
+    assert!(missed.contains("Closest names:\n  src/auth/session.go"), "{missed}");
+    assert!(missed.contains("`src/auth` exists and holds 4 files"), "{missed}");
+    assert!(!missed.contains("guard.go") && !missed.contains("Keep"), "{missed}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn nothing_under_a_path_is_not_nothing_anywhere() {
+    let root = scratch("elsewhere");
+    std::fs::create_dir_all(root.join("api")).unwrap();
+    std::fs::create_dir_all(root.join("web")).unwrap();
+    std::fs::write(root.join("api/token.go"), "func ValidateToken() {\n\treturn\n}\n").unwrap();
+    std::fs::write(root.join("web/cart.ts"), "export function clearCart() {\n  return 1;\n}\n").unwrap();
+    let index = Index::build(&root, None).unwrap();
+
+    let within = omega::usages::Options { path: Some("web".to_owned()), ..Default::default() };
+    let answer = omega::usages::usages(&index, "ValidateToken", &within);
+    assert!(answer.contains("under `web`") && answer.contains("api/token.go"), "{answer}");
+    let answer = omega::usages::grep(&index, r"func \w+Token", &within);
+    assert!(answer.contains("under `web`") && answer.contains("api/token.go"), "{answer}");
+    let nowhere = omega::usages::Options { path: Some("mobile".to_owned()), ..Default::default() };
+    assert!(omega::usages::usages(&index, "ValidateToken", &nowhere).contains("No indexed file has `mobile`"));
+
+    let options = Options { path: Some("web".to_owned()), ..Options::default() };
+    let hits = search(&index, "ValidateToken", &options);
+    let answer = omega::search::render(&index, "ValidateToken", &hits, &options);
+    assert!(answer.contains("No matches under `web`") && answer.contains("api/token.go"), "{answer}");
+
+    // A name nothing bears is said to be missing, without guesses that share one word with it.
+    let hits = search(&index, "ClearToken", &Options::default());
+    let answer = omega::search::render(&index, "ClearToken", &hits, &Options::default());
+    assert!(answer.contains("Nothing in the code is named `ClearToken`") && !answer.contains("token.go"), "{answer}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -108,6 +108,16 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
 
     let mut found = collect(index, needle, options.path.as_deref());
     if found.is_empty() {
+        // Outside `path` the dotted name may be written in quotes after all.
+        if qualified && options.path.is_some() {
+            let written = collect(index, Needle::Text(asked), None);
+            if written.iter().flat_map(|file| &file.lines).any(|line| is_quoted(&line.text, asked)) {
+                return elsewhere(index, Needle::Text(asked), options.path.as_deref()).unwrap_or_default();
+            }
+        }
+        if let Some(outside) = elsewhere(index, needle, options.path.as_deref()) {
+            return outside;
+        }
         return match needle {
             Needle::Word(name) if qualified => format!(
                 "`{asked}` is not written in quotes anywhere, and there are no whole-word occurrences of `{name}` in code. \
@@ -148,12 +158,44 @@ pub fn grep(index: &Index, asked: &str, options: &Options) -> String {
     };
     let mut found = collect(index, Needle::Pattern(&pattern), options.path.as_deref());
     if found.is_empty() {
+        if let Some(outside) = elsewhere(index, Needle::Pattern(&pattern), options.path.as_deref()) {
+            return outside;
+        }
         return format!(
             "No line matches /{asked}/ in the indexed files. Lines are matched one at a time, \
              case-sensitively unless the expression opens with (?i)."
         );
     }
     render(&index.label, &format!("/{asked}/"), "Matched", &mut found, options)
+}
+
+/// What to say when nothing was found under `path`: "none here" must not read
+/// as "none anywhere", or the agent concludes the thing does not exist.
+fn elsewhere(index: &Index, needle: Needle, path: Option<&str>) -> Option<String> {
+    let path = path?;
+    let shown = match needle {
+        Needle::Pattern(pattern) => format!("/{}/", pattern.as_str()),
+        _ => format!("`{}`", needle.text()),
+    };
+    if !index.files.iter().any(|file| file.path.contains(path)) {
+        return Some(format!("No indexed file has `{path}` in its path, so {shown} was not looked for."));
+    }
+    let found = collect(index, needle, None);
+    if found.is_empty() {
+        return None;
+    }
+    let lines: usize = found.iter().map(|file| file.lines.len()).sum();
+    let mut files: Vec<&FileUsages> = found.iter().collect();
+    files.sort_by_key(|file| (file.kind == Kind::Test, std::cmp::Reverse(file.lines.len())));
+    let named: Vec<&str> = files.iter().take(3).map(|file| file.path.as_str()).collect();
+    Some(format!(
+        "Nothing for {shown} under `{path}`, but {lines} line{} in {} file{} elsewhere: {}{}. Drop or change `path`.",
+        plural(lines),
+        found.len(),
+        plural(found.len()),
+        named.join(", "),
+        if found.len() > named.len() { ", ..." } else { "" },
+    ))
 }
 
 /// Whether `line` writes `text` as a string, or as the head or tail of one.

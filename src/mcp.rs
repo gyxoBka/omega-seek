@@ -39,8 +39,8 @@ gives the line to start reading from.";
 
 const ROOT_DESCRIPTION: &str = "Search this directory instead of the repository omega was started \
 in: a git worktree you are working in, a sibling repository (`../backend`), or a parent holding \
-several repositories (`..`). Absolute, or relative to omega's repository. Omit it for the current \
-repository.";
+several repositories (`..`). Absolute, or relative to omega's repository. Omit it only when you \
+are working in the repository omega was started in.";
 
 /// How long an index is trusted before its tree is looked at again.
 const FRESH_FOR: Duration = Duration::from_secs(2);

@@ -20,10 +20,13 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          # macOS is switched off for now; uncomment to bring Apple silicon
+          # back. Until then a release has no omega-aarch64-apple-darwin
+          # archive, install.sh finds nothing to download there, and a Mac
+          # builds from source with `cargo install --path .`.
+          # - os: macos-latest
+          #   target: aarch64-apple-darwin
           # No Intel macOS build: the hosted macos-13 runners queue for hours.
-          # install.sh sends those machines to `cargo install --path .`.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

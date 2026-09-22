@@ -265,3 +265,35 @@ fn nothing_under_a_path_is_not_nothing_anywhere() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_document_is_outlined_by_its_headings_and_found_by_them() {
+    let root = scratch("docs");
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(
+        root.join("docs/T07-cart-limits.md"),
+        "# T07 — Cart limits and quotas\n\nWhy.\n\n## Method and limits\n\nA cart holds at most forty lines.\n\n```rs\nfn not_a_heading() {}\n# not a heading either\n```\n\n## Done when\n\nTests pass.\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("cart.rs"), "fn limits() {\n    // method and limits are elsewhere\n}\n").unwrap();
+    let index = Index::build(&root, None).unwrap();
+
+    let outline = omega::outline::outline(&index, "docs/T07-cart-limits.md");
+    assert!(outline.contains("1  # T07 — Cart limits and quotas") && outline.contains("5  ## Method and limits"), "{outline}");
+    assert!(!outline.contains("not_a_heading") && !outline.contains("not a heading"), "{outline}");
+    let listing = omega::outline::outline(&index, "docs");
+    assert!(listing.contains("T07-cart-limits.md") && listing.contains("T07 — Cart limits and quotas") && !listing.contains("Done when"), "{listing}");
+
+    // The code mentions the words; the document has a section by that name.
+    let options = Options::default();
+    for query in ["method and limits", "T07"] {
+        let hits = search(&index, query, &options);
+        let answer = omega::search::render(&index, query, &hits, &options);
+        assert!(answer.contains("A document has a section by that name") && answer.contains("T07-cart-limits.md"), "{query}: {answer}");
+    }
+    // A phrase written in a document is found as text.
+    let found = omega::usages::usages(&index, "at most forty lines", &omega::usages::Options::default());
+    assert!(found.contains("T07-cart-limits.md"), "{found}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}

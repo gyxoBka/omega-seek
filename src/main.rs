@@ -130,7 +130,7 @@ fn run() -> Result<(), String> {
             print!("{answer}");
             Ok(())
         }
-        "eval" => eval(&root, model.as_deref(), &positional, eval_limit, eval_hits),
+        "eval" => eval(&root, model.as_deref(), &positional, eval_limit, eval_hits, options.content),
         "mcp" => omega::mcp::serve(&root, model.as_deref()),
         _ => Err(USAGE.to_owned()),
     }
@@ -151,6 +151,7 @@ fn eval(
     files: &[String],
     limit: usize,
     hits: Option<usize>,
+    content: Content,
 ) -> Result<(), String> {
     let started = Instant::now();
     let index = Index::open(root, model)?;
@@ -163,6 +164,7 @@ fn eval(
     );
     let options = Options {
         limit: hits.unwrap_or(limit * 8),
+        content,
         ..Options::default()
     };
     let hits_given = hits.is_some();
@@ -184,6 +186,10 @@ fn eval(
                 .filter(|anchor| !anchor.is_empty());
             let asked = Instant::now();
             let mut hits = search(&index, question, &options);
+            // What the agent is shown when the documentation answers better.
+            if let Some((documented, _)) = omega::search::documented(&index, question, &options, &hits) {
+                hits = documented;
+            }
             spent += asked.elapsed();
             if hits_given {
                 hits = omega::search::present(&hits)

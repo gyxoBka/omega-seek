@@ -179,7 +179,7 @@ fn tools() -> Value {
                     "query": {"type": "string", "description": "What the code does, or an identifier."},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Results (default 8)."},
                     "path": {"type": "string", "description": "Only files whose path contains this."},
-                    "content": {"type": "string", "enum": ["code", "docs", "config", "all"], "description": "What to search (default code)."},
+                    "content": {"type": "string", "enum": ["code", "docs", "config", "all"], "description": "What to search (default code; a document whose heading says what was asked is answered anyway)."},
                     "root": root,
                 },
                 "required": ["query"],

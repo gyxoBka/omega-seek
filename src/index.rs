@@ -239,7 +239,7 @@ impl Index {
 
 /// Bumped whenever chunking, tokenizing, naming or embedding changes what a
 /// file is read as: an older cache is then ignored rather than trusted.
-const STORE_VERSION: u32 = 14;
+const STORE_VERSION: u32 = 15;
 
 /// Whether the cache describes exactly the tree that was walked.
 fn matches(cache: &HashMap<String, CachedFile>, walked: &Walked) -> bool {
@@ -593,6 +593,11 @@ enum Syntax {
     /// HTML outside its scripts and styles: an element with an `id` is what
     /// the rest of the code refers to.
     Markup,
+    /// Markdown and its kin: a heading is what a document declares. A fenced
+    /// block of code inside it is quoted, not declared: a README that shows
+    /// `fn main` is not where `main` is defined.
+    Prose,
+    Quoted,
 }
 
 /// The syntax of every line of a file, from its extension and, where one file
@@ -604,13 +609,23 @@ fn syntax_of(relative: &str, lines: &[&str]) -> Vec<Syntax> {
         "css" | "scss" | "less" | "pcss" | "postcss" => return vec![Syntax::Sheet; lines.len()],
         "html" | "htm" => Syntax::Markup,
         "vue" | "svelte" | "astro" => Syntax::Code,
+        "md" | "mdx" | "markdown" | "rst" | "adoc" | "txt" => Syntax::Prose,
         _ => return vec![Syntax::Code; lines.len()],
     };
     let mut current = outside;
+    // A fence opens a block of code and the next fence closes it.
+    let mut fenced = false;
     lines
         .iter()
         .map(|line| {
             let line = line.trim_start();
+            if outside == Syntax::Prose {
+                if line.starts_with("```") || line.starts_with("~~~") {
+                    fenced = !fenced;
+                    return Syntax::Prose;
+                }
+                return if fenced { Syntax::Quoted } else { Syntax::Prose };
+            }
             if line.starts_with("</style") || line.starts_with("</script") {
                 current = outside;
             } else if line.starts_with("<style") && !line.contains("</style") {
@@ -689,6 +704,8 @@ fn styled_names(lines: &[&str], syntax: &[Syntax]) -> Vec<Option<String>> {
         .map(|(line, syntax)| match syntax {
             Syntax::Code => None,
             Syntax::Markup => declared_in_markup(line).map(str::to_owned),
+            Syntax::Prose => declared_in_prose(line).map(str::to_owned),
+            Syntax::Quoted => None,
             Syntax::Sheet => {
                 let trimmed = line.trim_start();
                 if trimmed.is_empty() {
@@ -741,6 +758,23 @@ fn declared_in_markup(line: &str) -> Option<&str> {
     // An id is written in whatever alphabet the page is.
     let id = ID.get_or_init(|| Regex::new(r#"\sid=["']([\p{L}_][\p{L}\p{N}_-]*)["']"#).expect("a valid regex"));
     id.captures(line).and_then(|found| found.get(1)).map(|name| name.as_str())
+}
+
+/// A heading, as a document's own name for the section it opens: `## Setup`
+/// declares `Setup`, with its marks, links and trailing hashes taken off.
+fn declared_in_prose(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('#')?;
+    let level = 1 + rest.chars().take_while(|&c| c == '#').count();
+    if level > 6 {
+        return None;
+    }
+    let title = rest.trim_start_matches('#');
+    // `#hashtag` and `#[derive]` are not headings; a heading has a space.
+    if !title.starts_with([' ', '\t']) {
+        return None;
+    }
+    let title = title.trim().trim_end_matches('#').trim();
+    (!title.is_empty()).then_some(title)
 }
 
 /// The identifiers a run of lines declares, and the line of each.

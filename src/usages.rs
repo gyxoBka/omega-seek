@@ -120,11 +120,11 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
         }
         return match needle {
             Needle::Word(name) if qualified => format!(
-                "`{asked}` is not written in quotes anywhere, and there are no whole-word occurrences of `{name}` in code. \
+                "`{asked}` is not written in quotes anywhere, and there are no whole-word occurrences of `{name}` in code or documents. \
                  Matching is case-sensitive; use search for a fuzzy lookup."
             ),
             Needle::Word(name) => format!(
-                "No whole-word occurrences of `{name}` in code. Matching is case-sensitive; use search for a fuzzy lookup."
+                "No whole-word occurrences of `{name}` in code or documents. Matching is case-sensitive; use search for a fuzzy lookup."
             ),
             Needle::Text(text) => format!(
                 "No occurrences of `{text}` as written. Matching is exact and case-sensitive; try a shorter fragment, or search."
@@ -260,9 +260,13 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         .filter(|&file| {
             let entry = &index.files[file as usize];
             let searched = match needle {
-                Needle::Word(_) => matches!(entry.kind, Kind::Code | Kind::Test),
-                // A route or a key is as likely to sit in configuration.
-                Needle::Text(_) => entry.kind != Kind::Docs,
+                // An identifier is also written in the documentation -- a
+                // task id in a registry, a name in a design note -- and those
+                // lines come after the code's.
+                Needle::Word(_) => entry.kind != Kind::Config,
+                // A route or a key is as likely to sit in configuration, and
+                // a phrase in the documentation.
+                Needle::Text(_) => true,
                 Needle::Pattern(_) => true,
             };
             searched && path.is_none_or(|wanted| entry.path.contains(wanted))
@@ -290,7 +294,8 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
                 .lines()
                 .enumerate()
                 .filter(|(offset, line)| match needle {
-                    Needle::Word(name) => !is_comment(line) && has_word(line, name),
+                    // A `#` opens a comment in code and a heading in a document.
+                    Needle::Word(name) => (entry.kind == Kind::Docs || !is_comment(line)) && has_word(line, name),
                     // A nested rule declares a name its line does not spell:
                     // `&__title` under `.card` is where `card__title` is.
                     Needle::Text(text) => {
@@ -326,9 +331,15 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
 
 fn render(label: &str, symbol: &str, listed: &str, found: &mut [FileUsages], options: &Options) -> String {
     // Code before tests, and within each the files that use it most.
+    // Code before tests before documents, and within each the files that use it most.
+    let order = |kind: Kind| match kind {
+        Kind::Code | Kind::Config => 0,
+        Kind::Test => 1,
+        Kind::Docs => 2,
+    };
     found.sort_by(|a, b| {
-        (a.kind == Kind::Test, std::cmp::Reverse(a.lines.len()), &a.path)
-            .cmp(&(b.kind == Kind::Test, std::cmp::Reverse(b.lines.len()), &b.path))
+        (order(a.kind), std::cmp::Reverse(a.lines.len()), &a.path)
+            .cmp(&(order(b.kind), std::cmp::Reverse(b.lines.len()), &b.path))
     });
 
     let declarations: usize = found.iter().flat_map(|file| &file.lines).filter(|line| line.declares).count();

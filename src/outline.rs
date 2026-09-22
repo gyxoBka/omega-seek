@@ -257,12 +257,14 @@ fn directory(index: &Index, prefix: &str) -> String {
     for &(file, name) in files.iter().take(MAX_ENTRIES.saturating_sub(below.len())) {
         let chunks = index.chunks.iter().filter(|chunk| chunk.file as usize == file);
         let length = chunks.clone().map(|chunk| chunk.end_line).max().unwrap_or(0);
+        // A document is named by its title; its sections are its own business.
+        let shown = if index.files[file].kind == Kind::Docs { 1 } else { NAMES_PER_FILE };
         let names: Vec<&str> = chunks
             .flat_map(|chunk| chunk.names.iter().map(String::as_str))
-            .take(NAMES_PER_FILE + 1)
+            .take(shown + 1)
             .collect();
-        let more = if names.len() > NAMES_PER_FILE { ", ..." } else { "" };
-        let listed = names[..names.len().min(NAMES_PER_FILE)].join(", ");
+        let more = if names.len() > shown { ", ..." } else { "" };
+        let listed = names[..names.len().min(shown)].join(", ");
         let _ = writeln!(out, "  {name}  ({length} lines)  {listed}{more}");
     }
     if files.len() + below.len() > MAX_ENTRIES {

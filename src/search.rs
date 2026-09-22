@@ -97,6 +97,8 @@ const SKIM_LINES: usize = 4;
 /// declares the identifier asked for and the next one scores under this share
 /// of it, the right lines were first every time: two answers are enough.
 const DECLARED_GAP: f32 = 0.75;
+/// A heading borne by this many documents or more names none of them.
+const TEMPLATE_HEADING: usize = 4;
 /// Other declarations of the same name shown beside it.
 const DECLARED_COMPANY: usize = 3;
 /// When none of the first three answers contains half of the question's terms,
@@ -180,16 +182,31 @@ pub fn search(index: &Index, query: &str, options: &Options) -> Vec<Hit> {
         .map(str::to_lowercase)
         .chain(hyphenated(query).map(str::to_lowercase))
         .collect();
+    // A heading that many documents share -- `## Why`, `## Done when` in
+    // every task file -- is a template, not a name for what was asked.
+    let mut heading_files: std::collections::HashMap<&str, std::collections::BTreeSet<u32>> = std::collections::HashMap::new();
+    for chunk in &index.chunks {
+        if index.files[chunk.file as usize].kind == Kind::Docs {
+            for name in &chunk.names {
+                if heads(name, query) {
+                    heading_files.entry(name.as_str()).or_default().insert(chunk.file);
+                }
+            }
+        }
+    }
+    let titled = |name: &str| heading_files.get(name).is_some_and(|files| files.len() < TEMPLATE_HEADING);
     let mut hits: Vec<Hit> = Vec::new();
     for (id, chunk) in index.chunks.iter().enumerate() {
         if !admitted[id] {
             continue;
         }
         let mut score = fused[id];
-        let declares = chunk
-            .names
-            .iter()
-            .any(|name| words.iter().any(|word| name.eq_ignore_ascii_case(word)));
+        // A document declares its headings, which are phrases: the query as a
+        // whole, or a heading as a whole in the query, is what names one.
+        let declares = chunk.names.iter().any(|name| {
+            words.iter().any(|word| name.eq_ignore_ascii_case(word))
+                || (index.files[chunk.file as usize].kind == Kind::Docs && titled(name))
+        });
         if declares {
             score += NAME_BOOST;
         }
@@ -444,11 +461,41 @@ pub fn present(hits: &[Hit]) -> (Vec<(Hit, Detail)>, bool) {
     (shown, confident)
 }
 
+/// The documentation's answer, when a document has a section whose heading
+/// says what was asked: that outranks code that merely mentions the words.
+/// Nothing weaker does: a document that merely covers the words better than
+/// an unconfident code answer displaced the right code once in the probes,
+/// and the agent is told to rephrase an unconfident answer anyway.
+#[must_use]
+pub fn documented(index: &Index, query: &str, options: &Options, hits: &[Hit]) -> Option<(Vec<Hit>, &'static str)> {
+    if options.content != Content::Code || hits.first().is_some_and(|hit| hit.declares) {
+        return None;
+    }
+    let in_docs = Options { content: Content::Docs, ..options.clone() };
+    let documented = search(index, query, &in_docs);
+    documented
+        .first()
+        .is_some_and(|hit| hit.declares)
+        .then_some((documented, "A document has a section by that name"))
+}
+
 /// The answer as the agent reads it: where, what, and the lines themselves.
 #[must_use]
 pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> String {
     if index.files.is_empty() {
         return nothing_indexed(index);
+    }
+    // A question the code answers poorly may be one the documentation answers
+    // well -- a task, a design note, a section by that very title. Code is
+    // searched first because that is what most questions are about; when it
+    // has no confident answer and the documents have one, that is the answer.
+    if let Some((documented, why)) = documented(index, query, options, hits) {
+        let in_docs = Options { content: Content::Docs, ..options.clone() };
+        let mut out = format!("{why}:
+
+");
+        out.push_str(&render(index, query, &documented, &in_docs));
+        return out;
     }
     if hits.is_empty() {
         // "None here" must not read as "none anywhere".
@@ -474,7 +521,11 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
     // shares a single common word is a guess about a name that does not exist.
     let name = query.trim();
     let lone_name = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    if lone_name && !hits[0].declares && crate::usages::count(index, name).1 == 0 {
+    let titled_in_docs = || {
+        let in_docs = Options { content: Content::Docs, ..options.clone() };
+        search(index, name, &in_docs).first().is_some_and(|hit| hit.declares)
+    };
+    if lone_name && !hits[0].declares && crate::usages::count(index, name).1 == 0 && !titled_in_docs() {
         shown.retain(|(hit, _)| hit.coverage + f32::EPSILON >= 1.0);
         shown.truncate(FULL_SNIPPETS);
         for (_, detail) in &mut shown {
@@ -512,7 +563,13 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
         let declared = (detail == Detail::Declaration && !all.is_empty())
             .then(|| declared_line(index, &hit, query))
             .flatten()
-            .map(|(_, line)| declaration_extent(&all, line as usize));
+            .map(|(_, line)| {
+                if file.kind == Kind::Docs {
+                    section_extent(&all, line as usize)
+                } else {
+                    declaration_extent(&all, line as usize)
+                }
+            });
         let (start, end) = declared.unwrap_or((hit.start_line as usize, hit.end_line as usize));
 
         let _ = write!(out, "{}{}:{start}-{end}", index.label, file.path);
@@ -558,7 +615,9 @@ pub fn render(index: &Index, query: &str, hits: &[Hit], options: &Options) -> St
             if lines.len() > count {
                 let _ = writeln!(out, "       ... {} more lines, to {end}", lines.len() - count);
             }
-            if let Some((name, _)) = declared_line(index, &hit, query) {
+            // A section is its own answer: how often its title is written
+            // elsewhere says nothing an agent needs.
+            if let Some((name, _)) = declared_line(index, &hit, query).filter(|_| file.kind != Kind::Docs) {
                 let (others, files) = crate::usages::count(index, name);
                 if others == 0 {
                     let _ = writeln!(out, "       not named anywhere else in the code");
@@ -589,6 +648,34 @@ pub fn nothing_indexed(index: &Index) -> String {
     )
 }
 
+/// Whether a heading and a query say the same thing, or the query says the
+/// heading among other words: `## Setup` for `setup`, `install and setup`.
+fn heads(heading: &str, query: &str) -> bool {
+    let plain = |text: &str| -> Vec<String> {
+        text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|word| word.chars().count() >= 2)
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let heading = plain(heading);
+    let query = plain(query);
+    // A heading of one common word (`Usage`) would name every mention of it,
+    // and `Limits` is not what `method and limits` asks for: the heading has
+    // to say what the query says, and most of it.
+    if heading.is_empty() || query.is_empty() {
+        return false;
+    }
+    // The query names the heading, or the heading says what the query says
+    // and little else: `method and limits` for `## Method and limits`,
+    // `page audit` for `# Page audit: the library and its recipes`.
+    let said = query.iter().filter(|word| heading.contains(word)).count();
+    let names_it = heading.iter().all(|word| query.contains(word)) && heading.len() * 2 > query.len();
+    let opens_with = said == query.len() && said * 2 >= heading.len();
+    // `T7` for `# T7 -- what the task is`: a document keyed by its first word.
+    let keyed = query.len() == 1 && heading[0] == query[0] && query[0].chars().any(char::is_numeric);
+    keyed || ((heading.len() >= 2 || heading[0].chars().count() >= 5) && (names_it || opens_with))
+}
+
 /// The names in a query that are spelled with hyphens, as a stylesheet spells
 /// its own: `.btn-primary`, `#site-header`, `--color-accent`, `$grid-gap`.
 fn hyphenated(query: &str) -> impl Iterator<Item = &str> {
@@ -606,13 +693,40 @@ fn declared_line<'a>(index: &'a Index, hit: &Hit, query: &str) -> Option<(&'a st
         .chain(hyphenated(query))
         .collect();
     let file = index.chunks[hit.chunk].file;
+    let documented = index.files[file as usize].kind == Kind::Docs;
     index
         .chunks
         .iter()
         .filter(|chunk| chunk.file == file && chunk.start_line >= hit.start_line && chunk.end_line <= hit.end_line)
         .flat_map(|chunk| chunk.names.iter().zip(&chunk.name_lines))
-        .find(|(name, _)| words.iter().any(|word| name.eq_ignore_ascii_case(word)))
+        .find(|(name, _)| words.iter().any(|word| name.eq_ignore_ascii_case(word)) || (documented && heads(name, query)))
         .map(|(name, &line)| (name.as_str(), line))
+}
+
+/// A heading's section: from the heading to the line before the next heading
+/// of its level or higher, one-based and inclusive, fenced code left alone.
+fn section_extent(lines: &[&str], heading: usize) -> (usize, usize) {
+    let level = |line: &str| line.chars().take_while(|&c| c == '#').count();
+    let opened = level(lines[heading - 1]);
+    let mut fenced = false;
+    let mut end = lines.len();
+    for (offset, line) in lines.iter().enumerate().skip(heading) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        let depth = level(trimmed);
+        if !fenced && depth > 0 && depth <= opened && trimmed[depth..].starts_with(' ') {
+            end = offset;
+            break;
+        }
+    }
+    // Blank lines before the next heading belong to no one.
+    while end > heading && lines[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    (heading, end)
 }
 
 /// From the comment above a declaration to the line that closes it, one-based

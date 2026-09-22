@@ -57,6 +57,17 @@ the stylesheet. In HTML an element's `id` is its name. On 54 probes written for
 the stylesheets of three private repositories (span R@1, before -> after):
 0.33 -> 0.83, 0.50 -> 0.75, 0.33 -> 0.67, with the code probes unchanged.
 
+A document declares its headings: `## Method and limits` declares `Method and
+limits`, and a fenced block of code inside it declares nothing, since a README
+that shows `fn main` is not where `main` is defined. An outline of a document
+is its headings with their lines; a directory of documents shows each one's
+title. Code is searched first, because most questions are about it; but when
+a document has a heading that says what was asked -- the query names the
+heading, the heading says the query and little else, or a one-word query is
+the heading's first word, as a task id is -- the document is the answer, and
+so is a confident document answer when the code has none. `usages` looks for
+literal text in documents too.
+
 ## Index and cache
 
 Built in memory at start. The disk is the only source of truth: before every

@@ -1,6 +1,6 @@
 [package]
 name = "omega-seek"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.88.0"
 description = "Code search for coding agents, over MCP: the right lines, not a chain of greps"

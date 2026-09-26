@@ -20,13 +20,10 @@ jobs:
             target: x86_64-pc-windows-msvc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # macOS is switched off for now; uncomment to bring Apple silicon
-          # back. Until then a release has no omega-aarch64-apple-darwin
-          # archive, install.sh finds nothing to download there, and a Mac
-          # builds from source with `cargo install --path .`.
-          # - os: macos-latest
-          #   target: aarch64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
           # No Intel macOS build: the hosted macos-13 runners queue for hours.
+          # install.sh sends those machines to `cargo install --path .`.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +44,9 @@ jobs:
           New-Item -ItemType Directory -Force package | Out-Null
           Copy-Item target/${{ matrix.target }}/release/omega.exe, scripts/install.ps1, README.md package/
           Compress-Archive -Path package/* -DestinationPath omega-${{ matrix.target }}.zip
+          # The bare binary and its digest, for `omega update`.
+          Copy-Item target/${{ matrix.target }}/release/omega.exe omega-${{ matrix.target }}.exe
+          (Get-FileHash omega-${{ matrix.target }}.exe -Algorithm SHA256).Hash.ToLower() + "  omega-${{ matrix.target }}.exe" | Out-File -Encoding ascii -NoNewline omega-${{ matrix.target }}.exe.sha256
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -55,6 +55,9 @@ jobs:
           cp target/${{ matrix.target }}/release/omega scripts/install.sh README.md package/
           chmod +x package/omega package/install.sh
           tar -czf omega-${{ matrix.target }}.tar.gz -C package .
+          # The bare binary and its digest, for `omega update`.
+          cp target/${{ matrix.target }}/release/omega omega-${{ matrix.target }}
+          if command -v sha256sum >/dev/null; then sha256sum omega-${{ matrix.target }} > omega-${{ matrix.target }}.sha256; else shasum -a 256 omega-${{ matrix.target }} > omega-${{ matrix.target }}.sha256; fi
 
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
@@ -62,4 +65,8 @@ jobs:
           files: |
             omega-${{ matrix.target }}.zip
             omega-${{ matrix.target }}.tar.gz
+            omega-${{ matrix.target }}.exe
+            omega-${{ matrix.target }}.exe.sha256
+            omega-${{ matrix.target }}
+            omega-${{ matrix.target }}.sha256
           fail_on_unmatched_files: false

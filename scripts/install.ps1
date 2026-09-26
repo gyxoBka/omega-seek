@@ -6,10 +6,9 @@
 .DESCRIPTION
   Run it from an unpacked release archive (the binary beside this script is the
   one installed), or on its own, in which case the release is downloaded with
-  the GitHub CLI -- the repository is private, so `gh auth login` must have
-  been done once:
+  from the latest GitHub release:
 
-    gh api repos/gyxoBka/omega-seek/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
+    irm https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.ps1 | iex
 
   Running it again updates the binary and changes nothing else.
 
@@ -108,16 +107,25 @@ $staging = $null
 # used to leave the archive and its unpacked copy in the temp directory.
 try {
 if (-not $source) {
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        throw "No omega.exe beside this script and no GitHub CLI to download one. Install gh (https://cli.github.com), run 'gh auth login', and try again -- or download $Asset from the repository's Releases page, unpack it, and run install.ps1 from there."
-    }
     $staging = Join-Path ([IO.Path]::GetTempPath()) "omega-install-$PID"
     New-Item -ItemType Directory -Force $staging | Out-Null
-    $tag = @()
-    if ($Version -ne 'latest') { $tag = @($Version) }
     Write-Host "  download     $Asset ($Version) from $Repo"
-    & gh release download @tag --repo $Repo --pattern $Asset --dir $staging --clobber
-    if ($LASTEXITCODE -ne 0) { throw "gh could not download $Asset from $Repo" }
+    # A public release is a plain URL. The GitHub CLI is the way in for a
+    # private fork, when it is there.
+    $url = if ($Version -eq 'latest') { "https://github.com/$Repo/releases/latest/download/$Asset" } else { "https://github.com/$Repo/releases/download/$Version/$Asset" }
+    $archive = Join-Path $staging $Asset
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+    } catch {
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            $tag = @(); if ($Version -ne 'latest') { $tag = @($Version) }
+            & gh release download @tag --repo $Repo --pattern $Asset --dir $staging --clobber
+        }
+    }
+    if (-not (Test-Path $archive) -or (Get-Item $archive).Length -eq 0) {
+        throw "Could not download $url. Download $Asset from https://github.com/$Repo/releases, unpack it, and run install.ps1 from there."
+    }
     Expand-Archive -Force (Join-Path $staging $Asset) $staging
     $source = (Get-ChildItem -Recurse $staging -Filter 'omega.exe' | Select-Object -First 1).FullName
     if (-not $source) { throw "$Asset holds no omega.exe" }

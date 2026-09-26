@@ -56,23 +56,23 @@ measured, and what was tried and dropped: [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Quick start
 
-**1. Install the binary** (puts it on PATH and downloads the 32 MB model). The
-repository is private, so the GitHub CLI carries the credentials -- run
-`gh auth login` once.
+**1. Install the binary** (puts it on PATH and downloads the 32 MB model).
 
 ```powershell
 # Windows
-gh api repos/gyxoBka/omega-seek/contents/scripts/install.ps1 -H "Accept: application/vnd.github.raw" | Out-String | iex
+irm https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.ps1 | iex
 ```
 
 ```sh
 # Linux / macOS
-gh api repos/gyxoBka/omega-seek/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | sh
+curl -fsSL https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.sh | sh
 ```
 
-Without `gh`: download the archive for your platform from Releases, unpack it,
-run the `install.ps1` / `install.sh` inside. From source:
-`cargo install --path . && omega model install`.
+Or download the archive for your platform from
+[Releases](https://github.com/gyxoBka/omega-seek/releases), unpack it and run
+the `install.ps1` / `install.sh` inside. From source:
+`cargo install --path . && omega model install`. Later, `omega update`
+brings the installed binary to the latest release.
 
 **2. Connect it to your agents.**
 
@@ -133,3 +133,8 @@ install.ps1 -Uninstall -Purge      # or: install.sh --uninstall --purge
 
 Takes omega out of the agents, then removes the binary, the PATH entry, the
 model and the index cache.
+
+## Licence
+
+MIT. The embedding model, `potion-code-16M-v2`, is MIT too; the stop-word
+lists are Snowball's (BSD), as PostgreSQL ships them.

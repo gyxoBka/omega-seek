@@ -14,4 +14,5 @@ pub mod outline;
 pub mod roots;
 pub mod search;
 pub mod tokenize;
+pub mod update;
 pub mod usages;

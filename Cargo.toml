@@ -1,10 +1,20 @@
 [package]
-name = "omega"
-version = "0.1.8"
+name = "omega-seek"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.88.0"
-license = "MIT OR Apache-2.0"
+description = "Code search for coding agents, over MCP: the right lines, not a chain of greps"
+repository = "https://github.com/gyxoBka/omega-seek"
+license = "MIT"
 publish = false
+
+# The package is omega-seek; the command and the crate are omega.
+[lib]
+name = "omega"
+
+[[bin]]
+name = "omega"
+path = "src/main.rs"
 
 [dependencies]
 ignore = "0.4"

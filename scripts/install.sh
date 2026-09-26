@@ -4,10 +4,9 @@
 #
 # Run it from an unpacked release archive (the binary beside this script is the
 # one installed), or on its own, in which case the release is downloaded with
-# the GitHub CLI -- the repository is private, so `gh auth login` must have
-# been done once:
+# from the latest GitHub release:
 #
-#   gh api repos/gyxoBka/omega-seek/contents/scripts/install.sh -H "Accept: application/vnd.github.raw" | sh
+#   curl -fsSL https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.sh | sh
 #
 # Running it again updates the binary and changes nothing else.
 #
@@ -95,18 +94,34 @@ if [ -z "$SOURCE" ]; then
         echo "No release is built for $(uname -s) $(uname -m); build from source with 'cargo install --path .'." >&2
         exit 1
     fi
-    if ! command -v gh >/dev/null 2>&1; then
-        echo "No omega beside this script and no GitHub CLI to download one." >&2
-        echo "Install gh (https://cli.github.com) and run 'gh auth login' -- or download $ASSET" >&2
-        echo "from the repository's Releases page, unpack it, and run install.sh from there." >&2
-        exit 1
-    fi
     STAGING=$(mktemp -d)
     echo "  download     $ASSET ($VERSION) from $REPO"
+    # A public release is a plain URL; curl or wget is on any machine. The
+    # GitHub CLI is the way in for a private fork.
     if [ "$VERSION" = latest ]; then
-        gh release download --repo "$REPO" --pattern "$ASSET" --dir "$STAGING" --clobber
+        URL="https://github.com/$REPO/releases/latest/download/$ASSET"
     else
-        gh release download "$VERSION" --repo "$REPO" --pattern "$ASSET" --dir "$STAGING" --clobber
+        URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+    fi
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$URL" -o "$STAGING/$ASSET"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q "$URL" -O "$STAGING/$ASSET"
+    elif command -v gh >/dev/null 2>&1; then
+        if [ "$VERSION" = latest ]; then
+            gh release download --repo "$REPO" --pattern "$ASSET" --dir "$STAGING" --clobber
+        else
+            gh release download "$VERSION" --repo "$REPO" --pattern "$ASSET" --dir "$STAGING" --clobber
+        fi
+    else
+        echo "No omega beside this script and no curl, wget or gh to download one." >&2
+        echo "Download $ASSET from https://github.com/$REPO/releases, unpack it, and run install.sh from there." >&2
+        exit 1
+    fi
+    if [ ! -s "$STAGING/$ASSET" ]; then
+        echo "Could not download $URL" >&2
+        echo "Download $ASSET from https://github.com/$REPO/releases, unpack it, and run install.sh from there." >&2
+        exit 1
     fi
     tar -xzf "$STAGING/$ASSET" -C "$STAGING"
     SOURCE=$(find "$STAGING" -type f -name omega | head -n 1)

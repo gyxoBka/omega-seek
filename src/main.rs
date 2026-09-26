@@ -11,6 +11,7 @@ omega grep <regex> [--root DIR] [-k N] [--path TEXT]
 omega eval <probes.tsv>... [--root DIR] [--limit N] [--hits N]
 omega mcp [--root DIR]
 omega model install
+omega update [--check]
 omega install|uninstall [--agents claude,codex,...] [--integrations mcp,instructions,subagent] [--yes] [--dry-run]
 
 The static model is read from --model DIR, else OMEGA_MODEL, else where
@@ -105,6 +106,7 @@ fn run() -> Result<(), String> {
             println!("model installed at {}", dir.display());
             Ok(())
         }
+        "update" => omega::update::run(positional.iter().any(|arg| arg == "--check")),
         "install" => omega::install::run(omega::install::Mode::Install, request),
         "uninstall" => omega::install::run(omega::install::Mode::Uninstall, request),
         "outline" => {

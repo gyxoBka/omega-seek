@@ -123,6 +123,16 @@ config with comments is left alone and the entry is printed to add by hand.
 `--agents claude,codex --integrations mcp,instructions --yes` makes it
 scriptable; `OMEGA_HOME=<dir>` rehearses it against a scratch home.
 
+`omega update` brings the installed binary to the latest release without an
+installer: the release's tag is read off where GitHub redirects
+`releases/latest` to, which needs no API call and no token; a release carries
+the bare binary of each platform and its SHA-256 beside the archives, so the
+update is one small download and a check. The running binary is renamed aside
+on Windows, where it cannot be overwritten, and renamed over on Unix; then the
+integrations already installed are written again, so an instruction text that
+changed with the release reaches the agents, and unchanged files stay byte
+for byte.
+
 The model is read from `--model DIR`, else `OMEGA_MODEL`, else where
 `model install` put it (pinned revision, sha256-verified), else the Hugging
 Face cache; without one, search is lexical only and says so.

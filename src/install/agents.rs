@@ -67,6 +67,8 @@ pub enum McpShape {
 pub enum SubagentShape {
     /// Markdown with `name` / `description` / `tools` front matter.
     Markdown,
+    /// OpenCode Markdown with a boolean tools map.
+    OpenCodeMarkdown,
     /// Codex: TOML with `developer_instructions`.
     CodexToml,
 }
@@ -184,7 +186,10 @@ pub fn agents(dirs: &Dirs) -> Vec<Agent> {
             config_dir: Some(dirs.xdg_config.join("opencode")),
             mcp: Some((opencode_config(dirs), "mcp", Opencode)),
             instructions: Some(dirs.xdg_config.join("opencode/AGENTS.md")),
-            subagent: markdown(dirs.xdg_config.join("opencode/agents/omega.md")),
+            subagent: Some((
+                dirs.xdg_config.join("opencode/agents/omega.md"),
+                SubagentShape::OpenCodeMarkdown,
+            )),
         },
         Agent {
             id: "codex",

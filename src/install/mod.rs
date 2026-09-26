@@ -256,6 +256,9 @@ fn subagent(shape: SubagentShape) -> String {
         SubagentShape::Markdown => format!(
             "---\nname: omega\ndescription: {SUBAGENT_DESCRIPTION}\ntools: Bash, Read\n---\n\n{body}"
         ),
+        SubagentShape::OpenCodeMarkdown => format!(
+            "---\nname: omega\ndescription: {SUBAGENT_DESCRIPTION}\ntools:\n  \"*\": false\n  bash: true\n  read: true\n---\n\n{body}"
+        ),
         SubagentShape::CodexToml => format!(
             "name = \"omega\"\ndescription = \"{SUBAGENT_DESCRIPTION}\"\ndeveloper_instructions = '''\n{body}'''\n"
         ),

@@ -169,6 +169,48 @@ fn a_fresh_home_gets_new_files_and_loses_them_again() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+#[test]
+fn opencode_reinstall_replaces_scalar_tools_with_boolean_whitelist() {
+    let home = scratch("opencode-agent-tools");
+    let all = agents(&Dirs::under(&home));
+    let opencode = all.iter().find(|agent| agent.id == "opencode").unwrap();
+    let claude = all.iter().find(|agent| agent.id == "claude").unwrap();
+    let path = &opencode.subagent.as_ref().unwrap().0;
+    put(path, "---\nname: omega\ntools: Bash, Read\n---\n\nold body\n");
+
+    assert_eq!(
+        apply(Mode::Install, opencode, Integration::Subagent, Path::new(EXE)),
+        Action::Updated
+    );
+    let written = std::fs::read_to_string(path).unwrap();
+    let front = written
+        .strip_prefix("---\n")
+        .unwrap()
+        .split("\n---\n")
+        .next()
+        .unwrap();
+    assert!(front.starts_with("name: omega\n"));
+    assert!(front.contains("\ndescription: "));
+    assert!(front.contains("\ntools:\n  \"*\": false\n  bash: true\n  read: true"));
+    assert!(!front.contains("tools: Bash, Read"));
+    assert_eq!(front.matches("\ntools:").count(), 1);
+    assert_eq!(
+        apply(Mode::Install, opencode, Integration::Subagent, Path::new(EXE)),
+        Action::Unchanged
+    );
+
+    assert_eq!(
+        apply(Mode::Install, claude, Integration::Subagent, Path::new(EXE)),
+        Action::Created
+    );
+    assert!(
+        std::fs::read_to_string(home.join(".claude/agents/omega.md"))
+            .unwrap()
+            .contains("tools: Bash, Read")
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 /// Counting what install writes, not just reading its verdict: running it
 /// again -- from the same place or after the binary moved -- leaves one entry,
 /// one block and one table, never two.

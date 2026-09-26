@@ -207,10 +207,11 @@ repositories, baseline 0.632 at the time):
 
 ## Known gaps
 
-- Never yet used by an agent in real work: every number here is from probes.
+- The numbers here are from probes; what agents reported from real work is
+  what shaped the answers -- a dotted operation name, a wrong path, a
+  stylesheet, a document -- and none of it is measured as a whole.
 - The index lives in memory; the largest repository measured is 116k lines of
   first-party code.
 - Stemming is English and Russian only.
 - Linux and macOS are covered by the release workflow's tests only; nobody has
-  used omega there. There is no Intel macOS build, and the Apple silicon one
-  is switched off in the release workflow for now.
+  used omega there. There is no Intel macOS build.

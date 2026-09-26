@@ -4,9 +4,10 @@
 //! and its SHA-256, so an update is one small download and a check, with no
 //! archive to unpack. The running binary cannot be overwritten on Windows but
 //! can be renamed, so the new one takes its place and the old steps aside;
-//! on Unix the new one is renamed over it. Integrations already installed
-//! into agents are then written again, so an instruction text that changed
-//! with the release reaches them.
+//! on Unix the new one is renamed over it. The new binary is then run to
+//! write again the integrations already installed into agents -- the new
+//! binary, since the texts are compiled in, and only what is installed, so
+//! no agent gains an integration it was never given.
 
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
@@ -79,40 +80,50 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The new binary in place of the running one, the old one out of the way.
-fn replace(exe: &Path, bytes: &[u8]) -> Result<(), String> {
-    let fresh = exe.with_extension("new");
+/// The new binary in place of the one at `exe`, which may be running, and
+/// the old one out of the way. Public for the test that rehearses it.
+pub fn replace(exe: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = exe.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let fresh = exe.with_file_name(format!("{name}.new"));
     std::fs::write(&fresh, bytes).map_err(|error| format!("{}: {error}", fresh.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&fresh, std::fs::Permissions::from_mode(0o755))
-            .map_err(|error| format!("{}: {error}", fresh.display()))?;
-        std::fs::rename(&fresh, exe).map_err(|error| format!("{}: {error}", exe.display()))?;
+    let swapped = swap(exe, &fresh, &name);
+    if swapped.is_err() {
+        let _ = std::fs::remove_file(&fresh);
     }
-    #[cfg(windows)]
-    {
-        // A running binary can be renamed but not overwritten or deleted;
-        // it steps aside under a name of its own, since the one from the
-        // last update may still be held by a session running since then.
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_secs())
-            .unwrap_or_default();
-        let aside = exe.with_extension(format!("exe.old-{stamp}"));
-        std::fs::rename(exe, &aside).map_err(|error| format!("{}: {error}", exe.display()))?;
-        if let Err(error) = std::fs::rename(&fresh, exe) {
-            let _ = std::fs::rename(&aside, exe);
-            return Err(format!("{}: {error}", exe.display()));
-        }
-        // Whatever no server holds any more goes now; the rest at a later update.
-        if let Some(dir) = exe.parent() {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    if name.to_string_lossy().starts_with("omega.exe.old") {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
+    swapped
+}
+
+#[cfg(unix)]
+fn swap(exe: &Path, fresh: &Path, _name: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(fresh, std::fs::Permissions::from_mode(0o755))
+        .map_err(|error| format!("{}: {error}", fresh.display()))?;
+    // Renamed over: a running process keeps the inode it opened.
+    std::fs::rename(fresh, exe).map_err(|error| format!("{}: {error}", exe.display()))
+}
+
+#[cfg(windows)]
+fn swap(exe: &Path, fresh: &Path, name: &str) -> Result<(), String> {
+    // A running binary can be renamed but not overwritten or deleted; it
+    // steps aside under a name of its own, since the one from the last
+    // update may still be held by a session running since then.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default();
+    let aside = exe.with_file_name(format!("{name}.old-{stamp}"));
+    std::fs::rename(exe, &aside).map_err(|error| format!("{}: {error}", exe.display()))?;
+    if let Err(error) = std::fs::rename(fresh, exe) {
+        let _ = std::fs::rename(&aside, exe);
+        return Err(format!("{}: {error}", exe.display()));
+    }
+    // Whatever no process holds any more goes now; the rest at a later update.
+    if let Some(dir) = exe.parent() {
+        let prefix = format!("{name}.old");
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = std::fs::remove_file(entry.path());
                 }
             }
         }
@@ -158,10 +169,19 @@ pub fn run(check_only: bool) -> Result<(), String> {
     println!("installed {latest} at {}", exe.display());
 
     // The instructions and the sub-agent text may have changed with the
-    // release; what was installed is installed again, and unchanged files
-    // stay byte for byte.
-    let request = crate::install::Request { yes: true, ..Default::default() };
-    crate::install::run(crate::install::Mode::Install, request)
+    // release, and they are compiled into the binary: the new one writes
+    // them, and only where something of ours is already installed. This
+    // process, on Linux, no longer even knows its own path -- /proc/self/exe
+    // points at the replaced inode.
+    let status = std::process::Command::new(&exe)
+        .args(["install", "--yes", "--refresh"])
+        .status()
+        .map_err(|error| format!("{}: {error}", exe.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`omega install --yes --refresh` exited with {status}; run it by hand"))
+    }
 }
 
 #[cfg(test)]

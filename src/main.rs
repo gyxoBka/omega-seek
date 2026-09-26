@@ -12,7 +12,7 @@ omega eval <probes.tsv>... [--root DIR] [--limit N] [--hits N]
 omega mcp [--root DIR]
 omega model install
 omega update [--check]
-omega install|uninstall [--agents claude,codex,...] [--integrations mcp,instructions,subagent] [--yes] [--dry-run]
+omega install|uninstall [--agents claude,codex,...] [--integrations mcp,instructions,subagent] [--yes] [--dry-run] [--refresh]
 
 The static model is read from --model DIR, else OMEGA_MODEL, else where
 `model install` put it, else the Hugging Face cache; without one, search is
@@ -70,6 +70,7 @@ fn run() -> Result<(), String> {
             }
             "--yes" | "-y" => request.yes = true,
             "--dry-run" => request.dry_run = true,
+            "--refresh" => request.refresh = true,
             "--no-model" => model = Some(PathBuf::new()),
             _ => positional.push(arg),
         }

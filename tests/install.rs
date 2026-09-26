@@ -402,3 +402,28 @@ fn kiro_on_path() -> bool {
         })
     })
 }
+
+#[test]
+fn a_refresh_knows_what_is_installed_and_touches_only_that() {
+    use omega::install::installed;
+    let home = scratch("refresh");
+    put(&home.join(".claude.json"), "{\n  \"mcpServers\": {\n    \"other\": {\n      \"command\": \"x\"\n    }\n  }\n}\n");
+    put(&home.join(".claude/CLAUDE.md"), "# Mine\n");
+    let all = agents(&Dirs::under(&home));
+    let claude = all.iter().find(|agent| agent.id == "claude").unwrap();
+
+    // Another server's entry and a person's notes are not ours.
+    for integration in Integration::ALL {
+        assert!(!installed(claude, integration), "{integration:?} before install");
+    }
+    let _ = apply(Mode::Install, claude, Integration::Mcp, Path::new(EXE));
+    let _ = apply(Mode::Install, claude, Integration::Instructions, Path::new(EXE));
+    assert!(installed(claude, Integration::Mcp));
+    assert!(installed(claude, Integration::Instructions));
+    assert!(!installed(claude, Integration::Subagent), "never installed, so a refresh must not create it");
+
+    let _ = apply(Mode::Uninstall, claude, Integration::Mcp, Path::new(EXE));
+    assert!(!installed(claude, Integration::Mcp), "our entry gone, the other's still there");
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
+    assert_eq!(written["mcpServers"]["other"]["command"], "x");
+}

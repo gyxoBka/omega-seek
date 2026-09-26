@@ -1,8 +1,9 @@
 name: release
 
-# A tag `v*` builds the binary for each platform and attaches one archive per
-# platform to the release: the binary, the install script and the README.
-# scripts/install.ps1 and scripts/install.sh look for these asset names.
+# A tag `v*` builds the binary for each platform and attaches to the release
+# an archive per platform -- the binary, the install script and the README,
+# which scripts/install.ps1 and install.sh look for by name -- and the bare
+# binary with its SHA-256 beside it, which `omega update` looks for.
 on:
   push:
     tags: ["v*"]

@@ -128,10 +128,14 @@ installer: the release's tag is read off where GitHub redirects
 `releases/latest` to, which needs no API call and no token; a release carries
 the bare binary of each platform and its SHA-256 beside the archives, so the
 update is one small download and a check. The running binary is renamed aside
-on Windows, where it cannot be overwritten, and renamed over on Unix; then the
-integrations already installed are written again, so an instruction text that
-changed with the release reaches the agents, and unchanged files stay byte
-for byte.
+on Windows, where it cannot be overwritten, and renamed over on Unix. Then the
+new binary is run as `omega install --yes --refresh`: the new one, because the
+instruction and sub-agent texts are compiled in and the old process would
+write the old ones (and on Linux no longer knows its own path); `--refresh`,
+because it writes again only what is already installed -- our entry under its
+key, our block between our markers, our file -- so an agent that was never
+given an integration does not gain one, and unchanged files stay byte for
+byte. A test replaces the binary under a process that holds it open.
 
 The model is read from `--model DIR`, else `OMEGA_MODEL`, else where
 `model install` put it (pinned revision, sha256-verified), else the Hugging

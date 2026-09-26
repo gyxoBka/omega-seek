@@ -75,6 +75,28 @@ pub struct Request {
     pub yes: bool,
     /// Show the plan and write nothing.
     pub dry_run: bool,
+    /// Write again only what is already installed, wherever it is: what an
+    /// update does, so that a text that changed with the release reaches the
+    /// agents and no agent gains an integration it was never given.
+    pub refresh: bool,
+}
+
+/// Whether `integration` is already installed into `agent`: our entry under
+/// its key, our block between our markers, our file.
+#[must_use]
+pub fn installed(agent: &Agent, integration: Integration) -> bool {
+    let holds = |path: &Path, mark: &str| std::fs::read_to_string(path).is_ok_and(|text| text.contains(mark));
+    match integration {
+        Integration::Mcp => agent.mcp.as_ref().is_some_and(|(path, section, shape)| match shape {
+            McpShape::CodexToml => holds(path, &format!("[{section}.{SERVER_NAME}]")),
+            _ => std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .is_some_and(|root| root.get(section).and_then(|s| s.get(SERVER_NAME)).is_some()),
+        }),
+        Integration::Instructions => agent.instructions.as_deref().is_some_and(|path| holds(path, config::BLOCK_START)),
+        Integration::Subagent => agent.subagent.as_ref().is_some_and(|(path, _)| path.is_file()),
+    }
 }
 
 pub fn run(mode: Mode, request: Request) -> Result<(), String> {
@@ -99,6 +121,11 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
             }
             known.iter().filter(|agent| ids.iter().any(|id| id == agent.id)).collect()
         }
+        // A refresh goes only where something of ours already is.
+        None if request.refresh => known
+            .iter()
+            .filter(|agent| Integration::ALL.iter().any(|&integration| installed(agent, integration)))
+            .collect(),
         // `--yes` asks nothing: what would have been ticked is what is chosen.
         None if request.yes || request.dry_run => known.iter().filter(|agent| agent.detected()).collect(),
         None => {
@@ -118,7 +145,7 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
         }
     };
     if chosen.is_empty() {
-        println!("  Nothing selected.");
+        println!("{}", if request.refresh { "  Nothing of omega's is installed into any agent." } else { "  Nothing selected." });
         return Ok(());
     }
 
@@ -166,6 +193,10 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
         println!("  {}", agent.name);
         for &integration in &integrations {
             let Some(path) = integration.target(agent) else { continue };
+            if request.refresh && !installed(agent, integration) {
+                println!("    {:<13} {:<28} {}", integration.label(), "not installed, left so", display(&dirs, path));
+                continue;
+            }
             let action = apply(mode, agent, integration, &exe);
             println!("    {:<13} {:<28} {}", integration.label(), describe(&action), display(&dirs, path));
             if let (Action::Skipped(_), Integration::Mcp, Mode::Install) = (&action, integration, mode) {

@@ -1,9 +1,3 @@
-//! Every place on disk omega writes to, in one list: what an install creates,
-//! an uninstall has to find, and the two must not drift apart.
-//!
-//! Windows keeps data and caches under `%LOCALAPPDATA%` and settings under
-//! `%APPDATA%`; elsewhere the XDG directories are used, with their defaults.
-
 use std::path::PathBuf;
 
 fn env(name: &str) -> Option<PathBuf> {
@@ -14,7 +8,6 @@ fn home() -> Option<PathBuf> {
     env("HOME").or_else(|| env("USERPROFILE"))
 }
 
-/// Where downloaded data lives: the model.
 fn data() -> Option<PathBuf> {
     if cfg!(windows) {
         env("LOCALAPPDATA")
@@ -23,7 +16,6 @@ fn data() -> Option<PathBuf> {
     }
 }
 
-/// Where what can be rebuilt lives: the index stores.
 fn cache() -> Option<PathBuf> {
     if cfg!(windows) {
         env("LOCALAPPDATA")
@@ -32,7 +24,6 @@ fn cache() -> Option<PathBuf> {
     }
 }
 
-/// Where what the user decided lives: the settings.
 fn config() -> Option<PathBuf> {
     if cfg!(windows) {
         env("APPDATA")
@@ -41,13 +32,11 @@ fn config() -> Option<PathBuf> {
     }
 }
 
-/// The directory the models are installed under, one subdirectory each.
 #[must_use]
 pub fn models() -> Option<PathBuf> {
     Some(data()?.join("omega").join("models"))
 }
 
-/// The directory of the index stores, one file per repository and model.
 #[must_use]
 pub fn stores() -> Option<PathBuf> {
     Some(cache()?.join("omega").join("index"))
@@ -66,7 +55,6 @@ pub fn sockets() -> Option<PathBuf> {
     env("XDG_RUNTIME_DIR").map(|dir| dir.join("omega")).or_else(state)
 }
 
-/// omega's settings: the access each repository has been given.
 #[must_use]
 pub fn settings() -> Option<PathBuf> {
     Some(config()?.join("omega").join("config.json"))

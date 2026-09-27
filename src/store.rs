@@ -1,20 +1,3 @@
-//! The index on disk: one file per repository and model, a run of segments.
-//!
-//! A segment is a whole index of some files -- their chunks and names, a term
-//! dictionary with postings, and optionally their vectors -- laid out to be
-//! read where it lies, from a mapping of the file, rather than decoded into
-//! memory first. A start therefore costs what the tables of files and chunks
-//! cost, not what the postings and vectors weigh.
-//!
-//! The file is only ever appended to, or replaced whole by a file written
-//! beside it and renamed over; never truncated or written in place. A process
-//! that mapped it keeps reading what it mapped, and a segment cut short by a
-//! crash is told by its missing trailer and read no further.
-//!
-//! Terms are stored once per segment, postings as varint gaps with their
-//! weights, and vectors as bytes with one scale per row: a quarter of what
-//! floats weigh, for a ranking that is read by rank anyway.
-
 use crate::index::Kind;
 use memmap2::Mmap;
 use std::fs::{File, OpenOptions};
@@ -25,13 +8,8 @@ use std::sync::{Arc, OnceLock};
 
 const MAGIC: &[u8; 8] = b"OMEGAIDX";
 const TRAILER: &[u8; 8] = b"XDIAGEMO";
-/// Magic, version, kind, payload length.
 const HEADER: usize = 24;
-/// Payload length again, then the trailer.
 const FOOTER: usize = 16;
-/// Bumped whenever what a file is read as changes -- chunking, tokenizing,
-/// naming, embedding -- or the layout does: an older segment is then skipped
-/// rather than trusted, and the file is rewritten.
 pub const VERSION: u32 = 17;
 
 const LEXICAL: u32 = 1;
@@ -46,7 +24,6 @@ const POSTINGS: usize = 5;
 const FILE_POSTINGS: usize = 6;
 const VECS: usize = 7;
 const SECTIONS: usize = 8;
-/// The id, then an offset and a length for each section.
 const PREFIX: usize = 8 + SECTIONS * 16;
 
 const FILE_RECORD: usize = 60;
@@ -55,10 +32,8 @@ const NAME_RECORD: usize = 12;
 const TERM_RECORD: usize = 32;
 const VECTORS_PREFIX: usize = 16;
 
-/// What stands for "this file as it was when read".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Stamp {
-    /// Seconds and nanoseconds since the epoch.
     pub modified: Option<(u64, u32)>,
     pub bytes: u64,
 }
@@ -116,7 +91,6 @@ fn read_varint(bytes: &[u8], at: &mut usize) -> Option<u32> {
     None
 }
 
-/// A row as bytes and the scale that brings it back: `value = byte * scale`.
 #[must_use]
 pub fn quantize(row: &[f32]) -> (Vec<u8>, f32) {
     let largest = row.iter().fold(0.0f32, |largest, value| largest.max(value.abs()));
@@ -132,8 +106,6 @@ fn dot(row: &[u8], asked: &[f32]) -> f32 {
     row.iter().zip(asked).map(|(&byte, asked)| f32::from(byte as i8) * asked).sum()
 }
 
-/// Where a segment's bytes live: a mapping of the store, or memory for a
-/// segment that was just built.
 #[derive(Clone)]
 pub enum Bytes {
     Mapped(Arc<Mmap>),
@@ -156,20 +128,15 @@ impl Deref for Bytes {
     }
 }
 
-/// One file of a segment, as it was read.
 #[derive(Clone, Copy, Debug)]
 pub struct FileRecord<'a> {
     pub path: &'a str,
     pub stamp: Stamp,
-    /// What the path says the file is: what the walk compares against.
     pub walked: Kind,
-    /// What it is treated as, which its contents may have changed.
     pub kind: Kind,
-    /// False for a file that was looked at and left out.
     pub indexed: bool,
     pub chunk_start: u32,
     pub chunk_count: u32,
-    /// Its chunks' lengths in terms, together.
     pub length: f32,
     pub hash: [u8; 16],
 }
@@ -193,7 +160,6 @@ struct TermRecord {
     file_postings_count: u32,
 }
 
-/// The vectors of a segment's chunks and files, one byte per dimension.
 pub struct Vectors {
     bytes: Bytes,
     pub dimension: usize,
@@ -216,7 +182,6 @@ impl std::fmt::Debug for Vectors {
 }
 
 impl Vectors {
-    /// A vectors block at `at..at + length`, checked to fit.
     fn parse(bytes: Bytes, at: usize, length: usize) -> Option<Self> {
         if length < VECTORS_PREFIX {
             return None;
@@ -265,7 +230,6 @@ impl Vectors {
     }
 }
 
-/// A segment read where it lies.
 pub struct Segment {
     bytes: Bytes,
     pub id: u64,
@@ -273,7 +237,6 @@ pub struct Segment {
     files: usize,
     chunks: usize,
     terms: usize,
-    /// Inline, or attached by a later record once they are computed.
     vectors: OnceLock<Vectors>,
 }
 
@@ -289,7 +252,6 @@ impl std::fmt::Debug for Segment {
 }
 
 impl Segment {
-    /// A segment just built, held in memory.
     pub fn owned(bytes: Vec<u8>) -> Option<Arc<Self>> {
         let length = bytes.len();
         let bytes = Bytes::Owned(Arc::new(bytes));
@@ -297,9 +259,6 @@ impl Segment {
         (kind == LEXICAL && end == length).then(|| Self::parse(bytes.clone(), payload, end - FOOTER - payload))?
     }
 
-    /// The lexical payload at `at..at + length`, every table checked to fit
-    /// and every reference between tables checked to land: a store written by
-    /// something else, or cut short, is refused rather than read out of bounds.
     fn parse(bytes: Bytes, at: usize, length: usize) -> Option<Arc<Self>> {
         if length < PREFIX {
             return None;
@@ -423,7 +382,6 @@ impl Segment {
         }
     }
 
-    /// What a chunk declares, in source order, and the line of each.
     pub fn names(&self, chunk: &ChunkRecord) -> impl Iterator<Item = (&str, u32)> {
         (chunk.names_start..chunk.names_start + chunk.names_count).map(move |name| {
             let at = self.record(NAMES, NAME_RECORD, name as usize);
@@ -436,7 +394,6 @@ impl Segment {
         self.terms
     }
 
-    /// The term at `index` of the dictionary, which is in byte order.
     #[must_use]
     pub fn term(&self, index: usize) -> &[u8] {
         self.string(self.record(TERMS, TERM_RECORD, index))
@@ -466,7 +423,6 @@ impl Segment {
         None
     }
 
-    /// Each chunk the term occurs in, with its weight there.
     pub fn postings(&self, term: &str, mut each: impl FnMut(u32, u32)) {
         if let Some(found) = self.find(term) {
             let record = self.term_record(found);
@@ -474,7 +430,6 @@ impl Segment {
         }
     }
 
-    /// Each file the term occurs in, with its weight there.
     pub fn file_postings(&self, term: &str, mut each: impl FnMut(u32, u32)) {
         if let Some(found) = self.find(term) {
             let record = self.term_record(found);
@@ -482,7 +437,6 @@ impl Segment {
         }
     }
 
-    /// The postings of the term at `index` of the dictionary.
     pub fn postings_at(&self, index: usize, mut each: impl FnMut(u32, u32)) {
         let record = self.term_record(index);
         self.decode(POSTINGS, record.postings, record.postings_count, &mut each);
@@ -493,7 +447,6 @@ impl Segment {
         self.decode(FILE_POSTINGS, record.file_postings, record.file_postings_count, &mut each);
     }
 
-    /// The whole record of a segment built in memory, ready to append.
     #[must_use]
     pub fn owned_record(&self) -> Option<&[u8]> {
         match &self.bytes {
@@ -523,14 +476,11 @@ impl Segment {
         self.vectors.get()
     }
 
-    /// Hands over vectors computed after the segment was written.
     pub fn attach(&self, vectors: Vectors) -> bool {
         vectors.chunks == self.chunks && vectors.files == self.files && self.vectors.set(vectors).is_ok()
     }
 }
 
-/// The header and footer of the record at `at`: its kind, where its payload
-/// starts, and where the record ends. None when it is not whole.
 fn frame(bytes: &[u8], at: usize) -> Option<(u32, usize, usize)> {
     let header = bytes.get(at..at.checked_add(HEADER)?)?;
     if &header[..8] != MAGIC || u32_at(header, 8) != VERSION {
@@ -556,7 +506,6 @@ fn framed(kind: u32, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// A segment's vectors as rows of bytes, filled chunk by chunk and file by file.
 #[derive(Debug)]
 pub struct VectorRows {
     dimension: usize,
@@ -604,7 +553,6 @@ impl VectorRows {
         out.extend_from_slice(&self.file_rows);
     }
 
-    /// The vectors of the segment `target`, as a record of their own.
     #[must_use]
     pub fn attachment(&self, target: u64) -> Vec<u8> {
         let mut payload = target.to_le_bytes().to_vec();
@@ -612,7 +560,6 @@ impl VectorRows {
         framed(VECTORS, &payload)
     }
 
-    /// The same, readable in memory, for handing to the segment at once.
     #[must_use]
     pub fn into_vectors(self) -> Option<Vectors> {
         let mut bytes = Vec::new();
@@ -622,8 +569,6 @@ impl VectorRows {
     }
 }
 
-/// Builds a segment: files in path order, each followed by its chunks, then
-/// terms in byte order.
 #[derive(Debug)]
 pub struct Writer {
     strings: Vec<u8>,
@@ -636,12 +581,10 @@ pub struct Writer {
     vectors: Option<VectorRows>,
     chunk_count: u32,
     name_count: u32,
-    /// Where the chunk count of the file being written sits.
     open_file: Option<usize>,
 }
 
 impl Writer {
-    /// With `dimension` above zero, every file and chunk comes with a row.
     #[must_use]
     pub fn new(dimension: usize) -> Self {
         Self {
@@ -671,7 +614,6 @@ impl Writer {
         target.extend_from_slice(&(text.len() as u32).to_le_bytes());
     }
 
-    /// A file; its chunks follow. `vector` is its row when the segment has vectors.
     pub fn file(&mut self, record: &FileRecord<'_>, vector: Option<(&[u8], f32)>) {
         self.string(Section::Files, record.path.as_bytes());
         let (seconds, nanos) = record.stamp.modified.unwrap_or((0, u32::MAX));
@@ -690,7 +632,6 @@ impl Writer {
         }
     }
 
-    /// A chunk of the file last written.
     #[allow(clippy::too_many_arguments)]
     pub fn chunk<'a>(
         &mut self,
@@ -731,8 +672,6 @@ impl Writer {
         }
     }
 
-    /// A term, in byte order after the last one, with its postings in
-    /// ascending order of chunk and of file.
     pub fn term(&mut self, term: &[u8], postings: &[(u32, u32)], file_postings: &[(u32, u32)]) {
         self.string(Section::Terms, term);
         let encode = |out: &mut Vec<u8>, postings: &[(u32, u32)]| {
@@ -753,7 +692,6 @@ impl Writer {
         self.terms.extend_from_slice(&(file_postings.len() as u32).to_le_bytes());
     }
 
-    /// The segment, framed, ready to append.
     #[must_use]
     pub fn finish(self, id: u64) -> Vec<u8> {
         let mut vectors = Vec::new();
@@ -792,8 +730,6 @@ enum Section {
     Terms,
 }
 
-/// A fresh segment id: unique enough that an attachment cannot land on the
-/// wrong segment of the same file.
 #[must_use]
 pub fn new_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -802,25 +738,20 @@ pub fn new_id() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos() as u64);
     let mixed = nanos ^ (u64::from(std::process::id()) << 40) ^ COUNTER.fetch_add(1, Ordering::Relaxed).rotate_left(20);
-    // One round of splitmix, so neighbours differ in every bit.
     let mut z = mixed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
 }
 
-/// The segments of a store file, as far as they are whole.
 #[derive(Debug, Default)]
 pub struct Opened {
     pub segments: Vec<Arc<Segment>>,
-    /// Where the last whole record ends; past it is nothing, or a record cut
-    /// short, or something that is not a store.
     pub clean_end: usize,
     pub length: usize,
 }
 
 impl Opened {
-    /// Whether appending would put the new record where it can be found.
     #[must_use]
     pub fn clean(&self) -> bool {
         self.clean_end == self.length
@@ -829,7 +760,6 @@ impl Opened {
 
 fn options() -> OpenOptions {
     let mut options = OpenOptions::new();
-    // Let the file be renamed over and removed while mapped, as on Unix.
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -840,14 +770,9 @@ fn options() -> OpenOptions {
 
 #[allow(unsafe_code)]
 fn map(file: &File) -> std::io::Result<Mmap> {
-    // SAFETY: a store file is only ever appended to, or replaced by renaming
-    // another file over it; nothing truncates it or writes it in place. The
-    // bytes mapped are therefore never changed under the mapping, and a
-    // replaced file stays readable to whoever mapped it.
     unsafe { Mmap::map(file) }
 }
 
-/// The store at `path`, mapped. A missing or unreadable file is an empty store.
 #[must_use]
 pub fn open(path: &Path) -> Opened {
     let Ok(file) = options().read(true).open(path) else {
@@ -888,9 +813,6 @@ pub fn open(path: &Path) -> Opened {
     Opened { segments, clean_end: at, length }
 }
 
-/// Adds a record at the end of the store. A store that does not end on a
-/// whole record -- cut short by a crash, or not a store -- is rewritten
-/// instead, keeping what was whole, so the record can be found.
 pub fn append(path: &Path, record: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -902,11 +824,9 @@ pub fn append(path: &Path, record: &[u8]) -> std::io::Result<()> {
         return replace(path, &[&kept, record]);
     }
     let mut file = options().append(true).create(true).open(path)?;
-    // One write: appends from other processes land before or after it whole.
     file.write_all(record)
 }
 
-/// Whether the file is missing, empty, or ends on a record's trailer.
 fn ends_whole(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = options().read(true).open(path) else {
@@ -929,8 +849,6 @@ fn open_prefix(path: &Path, length: usize) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Writes `parts` as the whole store, beside it and renamed over, so that no
-/// reader ever sees half of it.
 pub fn replace(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -950,23 +868,15 @@ pub fn replace(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
     result
 }
 
-/// Marks the store as used now: its time says when it was last opened, not
-/// last written, which is what deciding it is abandoned needs. Only the time
-/// changes, never a byte.
 pub fn touch(path: &Path) {
     if let Ok(file) = options().write(true).open(path) {
         let _ = file.set_modified(std::time::SystemTime::now());
     }
 }
 
-/// A store not opened for this long belongs to a repository no longer worked on.
 pub const ABANDONED: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
-/// A file written aside and not renamed within this long was left by a crash.
 const LEFT_ASIDE: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// Removes from `dir` the stores not opened within `abandoned`, earlier
-/// releases' caches alike, and files left aside by a crash; nothing else, the
-/// directory being omega's but its neighbours not. How many files, and bytes.
 #[must_use]
 pub fn prune(dir: &Path, abandoned: std::time::Duration) -> (usize, u64) {
     let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
@@ -1073,7 +983,6 @@ mod tests {
         assert_eq!(opened.segments.len(), 1);
         assert!(!opened.clean());
 
-        // The torn tail is dropped, and what follows can be found.
         drop(opened);
         append(&path, &second).unwrap();
         let opened = open(&path);
@@ -1081,7 +990,6 @@ mod tests {
         let paths: Vec<&str> = opened.segments.iter().map(|segment| segment.file(0).path).collect();
         assert_eq!(paths, ["a.rs", "b.rs"]);
 
-        // Vectors attached later land on their segment.
         let target = opened.segments[1].id;
         let mut rows = VectorRows::new(2);
         let (row, scale) = quantize(&[1.0, 0.0]);
@@ -1091,7 +999,6 @@ mod tests {
         let opened = open(&path);
         assert!(opened.segments[0].vectors().is_none() && opened.segments[1].vectors().is_some());
 
-        // Overwritten in place, as nothing of omega's ever does, once unmapped.
         drop(opened);
         std::fs::write(&path, b"not a store").unwrap();
         assert!(open(&path).segments.is_empty());

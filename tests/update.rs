@@ -1,5 +1,3 @@
-//! The binary can be replaced while a process runs it.
-
 use std::path::PathBuf;
 
 fn scratch(name: &str) -> PathBuf {
@@ -18,7 +16,6 @@ fn a_running_binary_is_replaced_and_the_old_one_steps_aside() {
     std::fs::copy(&built, &exe).unwrap();
     let old = std::fs::read(&exe).unwrap();
 
-    // A server that keeps the binary open, as an MCP session does.
     let mut held = std::process::Command::new(&exe)
         .args(["mcp", "--no-model", "--root"])
         .arg(&dir)
@@ -30,7 +27,6 @@ fn a_running_binary_is_replaced_and_the_old_one_steps_aside() {
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    // "New" bytes: the same binary with a byte appended, so a later run still works.
     let mut fresh = old.clone();
     fresh.push(b'\n');
     omega::update::replace(&exe, &fresh).unwrap();
@@ -52,7 +48,6 @@ fn a_running_binary_is_replaced_and_the_old_one_steps_aside() {
     }
     assert!(!listed().iter().any(|name| name.ends_with(".new")), "no .new left: {:?}", listed());
 
-    // The session ends; the next update sweeps what it left.
     held.kill().unwrap();
     let _ = held.wait();
     std::thread::sleep(std::time::Duration::from_millis(300));

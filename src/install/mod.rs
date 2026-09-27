@@ -1,11 +1,3 @@
-//! `omega install` / `uninstall`: wire the search into coding agents.
-//!
-//! Three integrations per agent, each independent: the MCP server entry, a
-//! marked block of standing instructions, and a sub-agent that uses the CLI.
-//! Everything written is either an entry under our own key, a block between
-//! our own markers, or a file of our own, so uninstall takes out exactly what
-//! install put in.
-
 pub mod agents;
 pub mod config;
 pub mod remove;
@@ -68,22 +60,15 @@ impl Integration {
     }
 }
 
-/// What was asked for on the command line; anything absent is asked for.
 #[derive(Debug, Default)]
 pub struct Request {
     pub agents: Option<Vec<String>>,
     pub integrations: Option<Vec<Integration>>,
     pub yes: bool,
-    /// Show the plan and write nothing.
     pub dry_run: bool,
-    /// Write again only what is already installed, wherever it is: what an
-    /// update does, so that a text that changed with the release reaches the
-    /// agents and no agent gains an integration it was never given.
     pub refresh: bool,
 }
 
-/// Whether `integration` is already installed into `agent`: our entry under
-/// its key, our block between our markers, our file.
 #[must_use]
 pub fn installed(agent: &Agent, integration: Integration) -> bool {
     let holds = |path: &Path, mark: &str| std::fs::read_to_string(path).is_ok_and(|text| text.contains(mark));
@@ -122,15 +107,12 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
             }
             known.iter().filter(|agent| ids.iter().any(|id| id == agent.id)).collect()
         }
-        // A refresh goes only where something of ours already is.
         None if request.refresh => known
             .iter()
             .filter(|agent| Integration::ALL.iter().any(|&integration| installed(agent, integration)))
             .collect(),
-        // `--yes` asks nothing: what would have been ticked is what is chosen.
         None if request.yes || request.dry_run => known.iter().filter(|agent| agent.detected()).collect(),
         None => {
-            // Detected agents first, and ticked.
             let mut order: Vec<&Agent> = known.iter().collect();
             order.sort_by_key(|agent| !agent.detected());
             let labels: Vec<String> = order
@@ -214,7 +196,6 @@ pub fn run(mode: Mode, request: Request) -> Result<(), String> {
     Ok(())
 }
 
-/// One integration of one agent, installed or taken out.
 #[must_use]
 pub fn apply(mode: Mode, agent: &Agent, integration: Integration, exe: &Path) -> Action {
     match (integration, mode) {
@@ -262,15 +243,9 @@ fn mcp_entry(shape: McpShape, exe: &Path) -> Value {
 }
 
 fn codex_table(section: &str, exe: &Path) -> String {
-    // A literal string: a Windows path needs no escaping in single quotes.
     format!("[{section}.{SERVER_NAME}]\ncommand = '{}'\nargs = [\"mcp\"]\n", exe.display())
 }
 
-/// What the agent is told, kept as Markdown beside this file so the wording can
-/// be worked on without touching code. It names the command, not where the
-/// binary lives: the agent calls the MCP tools, and a shell finds `omega`
-/// on PATH. Only the MCP entry carries the absolute path, because an agent is
-/// not always started with the PATH a terminal has.
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 const SUBAGENT: &str = include_str!("subagent.md");
 

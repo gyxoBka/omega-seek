@@ -10,7 +10,6 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-/// What a file is for, which decides whether a search looks at it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
     Code,
@@ -22,30 +21,20 @@ pub enum Kind {
 #[derive(Debug)]
 pub struct Chunk {
     pub file: u32,
-    /// One-based, inclusive.
     pub start_line: u32,
     pub end_line: u32,
-    /// What the chunk declares, in source order, and the line of each.
     pub names: Vec<String>,
     pub name_lines: Vec<u32>,
-    /// Body length in terms, for BM25 length normalisation.
     pub length: f32,
-    /// Mostly import lines: many words, none of them what the file does.
     pub imports: bool,
 }
 
 #[derive(Debug)]
 pub struct FileEntry {
-    /// Relative to the root, forward slashes.
     pub path: String,
     pub kind: Kind,
 }
 
-/// The files and chunks of the tree as it is, read from segments: those of
-/// the store, and a delta of the files read again since.
-///
-/// The tables every answer walks -- files, chunks, their names -- are held
-/// here; the postings and vectors stay in the segments, read where they lie.
 pub struct Index {
     pub root: PathBuf,
     pub files: Vec<FileEntry>,
@@ -55,25 +44,14 @@ pub struct Index {
     pub average_file_length: f32,
     pub model: Option<Arc<StaticModel>>,
     pub tokenizer: Tokenizer,
-    /// What an answer puts in front of each path: nothing for the directory
-    /// the agent is taken to be in, the root itself for anywhere else, so that
-    /// a path in an answer can be opened as it stands.
     pub label: String,
     segments: Vec<Arc<Segment>>,
     delta: Option<Arc<Segment>>,
-    /// For each segment, then the delta: where its chunks and files are in
-    /// the tables above, `DEAD` for those the tree no longer has as they were.
     maps: Vec<Map>,
-    /// For each file of the tables, which part holds it and where.
     sources: Vec<(u32, u32)>,
-    /// The headings of documents by their words: built on the first search
-    /// after the tables change, not on every one.
     headings: OnceLock<HashMap<String, Vec<(u32, u32)>>>,
-    /// The files read since the segments were written, which the delta holds.
     dirty: BTreeMap<String, CachedFile>,
-    /// The tree as last walked.
     walked: Walked,
-    /// Where the segments are kept between runs, when they are.
     store: Option<PathBuf>,
 }
 
@@ -94,28 +72,18 @@ const DEAD: u32 = u32::MAX;
 struct Map {
     chunks: Vec<u32>,
     files: Vec<u32>,
-    /// Chunks still live.
     live: usize,
 }
 
-/// A name is worth this many body occurrences, and a path word this many.
-/// Both are whole: a posting's weight is a sum of them, stored as an integer.
 const NAME_WEIGHT: f32 = 3.0;
 const PATH_WEIGHT: f32 = 2.0;
 const _: () = assert!(NAME_WEIGHT as u32 as f32 == NAME_WEIGHT && PATH_WEIGHT as u32 as f32 == PATH_WEIGHT);
 const MAX_FILE_BYTES: u64 = 1 << 20;
 const MAX_NAMES: usize = 96;
-/// A first index writes what it has read every this many files, so that one
-/// interrupted -- an agent closed, a machine asleep -- resumes where it stopped.
 const BATCH_FILES: usize = 2048;
-/// Files read again during a session are written out once there are this many.
 const PERSIST_DIRTY: usize = 256;
-/// Past this many segments, or this share of dead chunks, the store is merged
-/// into one segment: each segment costs a lookup per term, and dead chunks
-/// cost disk.
 const MAX_SEGMENTS: usize = 8;
 const DEAD_SHARE: f32 = 0.25;
-/// What opens a block without declaring anything.
 const CONTROL: &[&str] = &[
     "else", "switch", "catch", "do", "try", "with", "await", "throw", "match", "loop", "when",
     "foreach", "elseif", "elif", "unless", "until", "using", "lock", "synchronized", "case",
@@ -128,14 +96,10 @@ const KEYWORDS: &[&str] = &[
     "implements", "self", "this", "var", "let", "mut", "pub", "unsafe", "extern", "default",
 ];
 
-/// A file as it was read, before it is written into a segment.
 struct CachedFile {
     stamp: Stamp,
-    /// What the path says the file is: what the walk compares against.
     walked: Kind,
-    /// What it is treated as, which its contents may have changed.
     kind: Kind,
-    /// False for a file that was looked at and left out.
     indexed: bool,
     path_terms: Vec<String>,
     drafts: Vec<Draft>,
@@ -150,47 +114,33 @@ struct Draft {
     name_lines: Vec<u32>,
     length: f32,
     terms: Vec<(String, f32)>,
-    /// Empty when the file was read without the model.
     vector: Vec<f32>,
 }
 
 type Walked = Vec<(String, PathBuf, Kind, Stamp)>;
 
-/// How far an index has come, for whoever is waiting on it.
 #[derive(Clone, Copy, Debug)]
 pub enum Progress {
-    /// Files read for their words, of those that had to be.
     Reading { done: usize, total: usize },
-    /// Files embedded, of those that had to be.
     Embedding { done: usize, total: usize },
-    /// The store merged into one segment.
     Compacting,
 }
 
 impl Index {
-    /// Read every indexable file under `root` and build the channels, keeping
-    /// nothing on disk.
     pub fn build(root: &Path, model_dir: Option<&Path>) -> Result<Self, String> {
         Self::open_in(root, model_dir, None)
     }
 
-    /// The same, keeping what each file was read as on disk between runs, so
-    /// a later start reads only the files that changed since.
     pub fn open(root: &Path, model_dir: Option<&Path>) -> Result<Self, String> {
         Self::open_in(root, model_dir, cache_dir().as_deref())
     }
 
-    /// `open`, with the store kept under `cache_dir` instead of the user's.
     pub fn open_in(root: &Path, model_dir: Option<&Path>, cache_dir: Option<&Path>) -> Result<Self, String> {
         let (index, upkeep) = Self::open_lexical_in(root, model_dir, cache_dir, &|_| {})?;
         upkeep.run(&|_| {})?;
         Ok(index)
     }
 
-    /// An index every file of which has been read for its words, and what is
-    /// left to do: the vectors of files read without the model, and merging
-    /// the store. Words are a fifth of the work of a first index, and all that
-    /// `usages`, `grep` and `outline` need; the rest can follow.
     pub fn open_lexical(
         root: &Path,
         model_dir: Option<&Path>,
@@ -206,8 +156,6 @@ impl Index {
         progress: &(dyn Fn(Progress) + Sync),
     ) -> Result<(Self, Upkeep), String> {
         let store = cache_dir.and_then(|dir| store_path(dir, root, model_dir));
-        // The model, the store and the tree do not depend on one another, and
-        // each is a good part of a start: they are read side by side.
         let (model, opened, walked) = std::thread::scope(|scope| {
             let model = scope.spawn(|| {
                 model_dir
@@ -248,11 +196,6 @@ impl Index {
                 segments.extend(kept);
             }
         }
-        // A batch written to the store is read back from it where it lies, not
-        // kept in memory: a first index of a large repository would otherwise
-        // hold all of itself twice. Should the store lose a batch -- another
-        // process merged it meanwhile -- what is missing is read again, and the
-        // last attempt keeps what it reads in memory whatever the store does.
         for attempt in 0..3 {
             let parts: Vec<&Arc<Segment>> = segments.iter().collect();
             let missing: Vec<usize> = resolve(&parts, &walked)
@@ -276,7 +219,6 @@ impl Index {
                     })
                     .collect();
                 let record = write_files(read.iter().map(|(relative, cached)| (*relative, cached)));
-                // A store that cannot be written is only a slower next start.
                 let stored = !keep && store.as_deref().is_some_and(|store| store::append(store, &record).is_ok());
                 if !stored {
                     kept.push(Segment::owned(record).ok_or("a segment just built cannot be read back")?);
@@ -313,14 +255,6 @@ impl Index {
         Ok((index, upkeep))
     }
 
-    /// The index of the tree as it is now. Files whose size and modification
-    /// time are what they were are not read again; when nothing changed at
-    /// all the index is handed back untouched.
-    ///
-    /// What changed is found by comparing this walk with the last, and the
-    /// tables are merged rather than rebuilt: what did not change is moved
-    /// into place, not read out of the segments again. An edit then costs
-    /// what walking the tree costs, and little more, whatever its size.
     #[must_use]
     pub fn refreshed(self) -> Self {
         self.refreshed_full().0
@@ -376,8 +310,6 @@ impl Index {
         self
     }
 
-    /// Writes the files read again during the session into the store, so the
-    /// next start does not read them again.
     pub fn persist(&mut self) {
         self.persist_delta();
     }
@@ -388,13 +320,11 @@ impl Index {
         };
         let Some(record) = delta.owned_record() else { return };
         if store::append(store, record).is_ok() {
-            // Its map is the last already, as the last segment it now is.
             self.segments.extend(self.delta.take());
             self.dirty.clear();
         }
     }
 
-    /// The tables, from the newest entry of each file in the tree.
     fn materialize(&mut self) {
         let parts: Vec<&Arc<Segment>> = self.segments.iter().chain(self.delta.iter()).collect();
         let mut tables = Tables::default();
@@ -406,8 +336,6 @@ impl Index {
         self.install(tables);
     }
 
-    /// The tables with the entries of `gone` files and of the old delta taken
-    /// out, and the files of the new delta put in, in path order.
     fn merge_tables(&mut self, old_delta: Option<u32>, gone: &HashSet<String>) {
         let delta_part = self.segments.len() as u32;
         let delta = self.delta.clone();
@@ -450,7 +378,6 @@ impl Index {
         self.install(tables);
     }
 
-    /// Takes `tables` as the index's, and points every segment's map at them.
     fn install(&mut self, tables: Tables) {
         let parts: Vec<&Arc<Segment>> = self.segments.iter().chain(self.delta.iter()).collect();
         let mut maps: Vec<Map> = parts
@@ -483,8 +410,6 @@ impl Index {
         self.headings = OnceLock::new();
     }
 
-    /// Every word of every document heading, lower-cased as a query's words
-    /// are, with the chunk and the place among its names of each heading.
     #[must_use]
     pub fn headings(&self) -> &HashMap<String, Vec<(u32, u32)>> {
         self.headings.get_or_init(|| {
@@ -507,7 +432,6 @@ impl Index {
         self.segments.iter().chain(self.delta.iter()).zip(&self.maps)
     }
 
-    /// Every live chunk `term` occurs in, with its weight there.
     #[must_use]
     pub fn postings(&self, term: &str) -> Vec<(u32, f32)> {
         let mut found = Vec::new();
@@ -521,7 +445,6 @@ impl Index {
         found
     }
 
-    /// Every live file `term` occurs in, its path included, with its weight there.
     #[must_use]
     pub fn file_postings(&self, term: &str) -> Vec<(u32, f32)> {
         let mut found = Vec::new();
@@ -535,7 +458,6 @@ impl Index {
         found
     }
 
-    /// The dimension of the vectors, once every live chunk has one.
     #[must_use]
     pub fn dense(&self) -> Option<usize> {
         self.model.as_ref()?;
@@ -546,13 +468,11 @@ impl Index {
         dimension
     }
 
-    /// Whether vectors are still being computed for some of the chunks.
     #[must_use]
     pub fn embedding(&self) -> bool {
         self.model.is_some() && !self.chunks.is_empty() && self.dense().is_none()
     }
 
-    /// Each chunk's closeness to `asked`.
     #[must_use]
     pub fn chunk_scores(&self, asked: &[f32]) -> Vec<f32> {
         let mut scores = vec![0.0f32; self.chunks.len()];
@@ -571,7 +491,6 @@ impl Index {
         scores
     }
 
-    /// Each file's closeness to `asked`, by the direction its chunks share.
     #[must_use]
     pub fn file_scores(&self, asked: &[f32]) -> Vec<f32> {
         let mut scores = vec![0.0f32; self.files.len()];
@@ -586,8 +505,6 @@ impl Index {
         scores
     }
 
-    /// What is left to do after the words: the vectors of the segments read
-    /// without the model, and merging the store once it has grown ragged.
     #[must_use]
     pub fn upkeep(&self) -> Upkeep {
         let pending = if self.model.is_some() {
@@ -610,15 +527,11 @@ impl Index {
         }
     }
 
-    /// Where the store is, when there is one.
     #[must_use]
     pub fn store(&self) -> Option<&Path> {
         self.store.as_deref()
     }
 
-    /// Whether `root` holds more indexable files than `limit`, found without
-    /// reading any of them: a root named by mistake is refused before it costs
-    /// minutes.
     #[must_use]
     pub fn holds_more_than(root: &Path, limit: usize) -> bool {
         ignore::WalkBuilder::new(root)
@@ -636,8 +549,6 @@ impl Index {
     }
 }
 
-/// The work an index leaves for later: it holds what it needs, so it can be
-/// done on another thread while the index answers.
 #[derive(Debug)]
 pub struct Upkeep {
     root: PathBuf,
@@ -648,23 +559,17 @@ pub struct Upkeep {
 }
 
 impl Upkeep {
-    /// Whether there is nothing to do.
     #[must_use]
     pub fn is_idle(&self) -> bool {
         self.pending.is_empty() && !(self.compact && self.store.is_some())
     }
 
-    /// Merge the store into one segment whatever its state: what `omega
-    /// index` leaves behind is the smallest store there is.
     #[must_use]
     pub fn tidy(mut self) -> Self {
         self.compact = true;
         self
     }
 
-    /// Embeds what is pending, segment by segment, each written to the store
-    /// as soon as it is done and handed to the index that shares it; then
-    /// merges the store when asked to.
     pub fn run(self, progress: &(dyn Fn(Progress) + Sync)) -> Result<(), String> {
         if let Some(model) = &self.model {
             let total: usize = self.pending.iter().map(|segment| segment.file_count()).sum();
@@ -696,14 +601,7 @@ impl Upkeep {
     }
 }
 
-/// The vectors of a segment's chunks, from the files as they are on disk. A
-/// file changed since it was read is read again anyway, into a newer segment;
-/// its rows here are never looked at, and left empty.
-///
-/// Files are read side by side, then chunks embedded side by side: one large
-/// file among many small ones would otherwise leave every core but one idle.
 fn embed(root: &Path, model: &StaticModel, dimension: usize, segment: &Segment) -> VectorRows {
-    // Each file's text and where each of its lines lies in it, as `lines()` cuts them.
     type Text = (String, Vec<(usize, usize)>);
     let texts: Vec<Option<Text>> = (0..segment.file_count())
         .into_par_iter()
@@ -737,7 +635,6 @@ fn embed(root: &Path, model: &StaticModel, dimension: usize, segment: &Segment) 
             };
             let start = (chunk.start_line as usize).saturating_sub(1).min(lines.len());
             let end = (chunk.end_line as usize).clamp(start, lines.len());
-            // One text per call, as when a file is read with the model.
             let body = lines[start..end].iter().map(|&(from, to)| &text[from..to]).collect::<Vec<_>>().join("\n");
             model
                 .encode_with_args(std::slice::from_ref(&body), None, 1)
@@ -764,7 +661,6 @@ fn embed(root: &Path, model: &StaticModel, dimension: usize, segment: &Segment) 
     rows
 }
 
-/// The direction a file's chunks share: their sum, made unit.
 fn file_vector<'a>(vectors: impl Iterator<Item = &'a [f32]>, dimension: usize) -> Vec<f32> {
     let mut sum = vec![0.0f32; dimension];
     for vector in vectors {
@@ -779,18 +675,15 @@ fn file_vector<'a>(vectors: impl Iterator<Item = &'a [f32]>, dimension: usize) -
     sum
 }
 
-/// The tables of an index being put together, in path order.
 #[derive(Default)]
 struct Tables {
     files: Vec<FileEntry>,
     chunks: Vec<Chunk>,
     lengths: Vec<f32>,
-    /// For each file, which part holds it and where.
     sources: Vec<(u32, u32)>,
 }
 
 impl Tables {
-    /// The file at `local` of `segment`, the part numbered `part`, and its chunks.
     fn push_from(&mut self, segment: &Segment, part: u32, local: usize) {
         let record = segment.file(local);
         let file = self.files.len() as u32;
@@ -816,9 +709,6 @@ impl Tables {
     }
 }
 
-/// Between two walks, both in path order: which files of `after` are new or
-/// changed, and which paths of `before` no longer describe the tree -- gone,
-/// or changed.
 fn differences(before: &Walked, after: &Walked) -> (Vec<usize>, HashSet<String>) {
     let mut changed = Vec::new();
     let mut gone = HashSet::new();
@@ -856,8 +746,6 @@ fn differences(before: &Walked, after: &Walked) -> (Vec<usize>, HashSet<String>)
     }
 }
 
-/// For each file of the tree, the newest entry that describes it as it is:
-/// which of `parts` holds it, and where.
 fn resolve(parts: &[&Arc<Segment>], walked: &Walked) -> Vec<Option<(usize, usize)>> {
     let wanted: HashMap<&str, usize> =
         walked.iter().enumerate().map(|(at, (relative, ..))| (relative.as_str(), at)).collect();
@@ -875,9 +763,6 @@ fn resolve(parts: &[&Arc<Segment>], walked: &Walked) -> Vec<Option<(usize, usize
     found
 }
 
-/// Rewrites the store as one segment of what is live in it, when it has grown
-/// ragged: many segments, or many dead chunks. Read afresh from disk, so that
-/// what other processes appended is kept too.
 fn compact(root: &Path, path: &Path) -> Result<(), String> {
     let opened = store::open(path);
     let walked = walk(root);
@@ -889,10 +774,6 @@ fn compact(root: &Path, path: &Path) -> Result<(), String> {
     if parts.len() <= 1 && live_chunks == total && live.len() == listed && opened.clean() {
         return Ok(());
     }
-    // A merged segment has vectors for all its chunks or none. While some live
-    // chunks still wait for theirs -- another process is reading files into
-    // the store as this one merges -- merging would throw away every vector
-    // there is: it waits for the next time instead.
     let with_chunks = || live.iter().filter(|&&(part, local)| parts[part].file(local).chunk_count > 0);
     let embedded = with_chunks().filter(|&&(part, _)| parts[part].vectors().is_some()).count();
     if embedded > 0 && embedded < with_chunks().count() {
@@ -905,7 +786,6 @@ fn compact(root: &Path, path: &Path) -> Result<(), String> {
     store::replace(path, &[&record]).map_err(|error| format!("cannot rewrite {}: {error}", path.display()))
 }
 
-/// One segment holding the `live` files of `parts`, in that order.
 fn merge(parts: &[&Arc<Segment>], live: &[(usize, usize)], stamps: Option<&[Stamp]>, dimension: usize) -> Vec<u8> {
     let mut writer = Writer::new(dimension);
     let mut chunk_maps: Vec<Vec<u32>> = parts.iter().map(|segment| vec![DEAD; segment.chunk_count()]).collect();
@@ -934,7 +814,6 @@ fn merge(parts: &[&Arc<Segment>], live: &[(usize, usize)], stamps: Option<&[Stam
             );
         }
     }
-    // Every term of every part, in byte order, with the postings still live.
     let mut heap: BinaryHeap<std::cmp::Reverse<(&[u8], usize, usize)>> = parts
         .iter()
         .enumerate()
@@ -978,7 +857,6 @@ fn merge(parts: &[&Arc<Segment>], live: &[(usize, usize)], stamps: Option<&[Stam
     writer.finish(store::new_id())
 }
 
-/// A segment of `files`, in the order given, which is path order.
 fn write_files<'a>(files: impl Iterator<Item = (&'a str, &'a CachedFile)>) -> Vec<u8> {
     let files: Vec<(&str, &CachedFile)> = files.collect();
     let dimension = files
@@ -1056,11 +934,6 @@ fn write_files<'a>(files: impl Iterator<Item = (&'a str, &'a CachedFile)>) -> Ve
     writer.finish(store::new_id())
 }
 
-/// A file read for its words, and with the model for its vectors when given.
-///
-/// A file that cannot be read as text, or is not worth reading, is remembered
-/// as such: forgetting it would make every refresh see a tree that differs
-/// from the store and read it again for nothing.
 fn read_file(
     tokenizer: &Tokenizer,
     model: Option<&StaticModel>,
@@ -1154,13 +1027,10 @@ fn borrowed(root: &Path, model_dir: Option<&Path>, cache_dir: &Path, walked: &Wa
     records
 }
 
-/// The user's cache of stores.
 fn cache_dir() -> Option<PathBuf> {
     crate::paths::stores()
 }
 
-/// One store per repository and model: vectors from one model mean nothing
-/// to another, and a lexical-only store has none.
 fn store_path(cache_dir: &Path, root: &Path, model_dir: Option<&Path>) -> Option<PathBuf> {
     let root = root.canonicalize().ok()?;
     let model = model_dir.map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1172,7 +1042,6 @@ fn store_path(cache_dir: &Path, root: &Path, model_dir: Option<&Path>) -> Option
     Some(cache_dir.join(format!("{name}.idx")))
 }
 
-/// The cache of the same repository as an earlier release kept it.
 fn forget_legacy(store: &Path) {
     let _ = std::fs::remove_file(store.with_extension("bin"));
 }
@@ -1264,9 +1133,6 @@ fn draft_file(tokenizer: &Tokenizer, model: Option<&StaticModel>, relative: &str
             for term in terms.drain(..) {
                 *weights.entry(term).or_default() += NAME_WEIGHT;
             }
-            // One text per call: a batch pads to its longest member and
-            // model2vec averages the padding in, so a vector would depend on
-            // its neighbours.
             let vector = model
                 .and_then(|model| {
                     model
@@ -1289,7 +1155,6 @@ fn draft_file(tokenizer: &Tokenizer, model: Option<&StaticModel>, relative: &str
         .collect()
 }
 
-/// Whether most of what these lines say is what they import.
 fn mostly_imports(lines: &[&str]) -> bool {
     const PREFIXES: &[&str] = &[
         "import ", "import(", "use ", "pub use ", "from ", "#include", "require(", "using ",
@@ -1317,26 +1182,15 @@ fn mostly_imports(lines: &[&str]) -> bool {
     written > 0 && importing * 5 >= written * 3
 }
 
-/// What kind of text a line is, which decides what declaring looks like in it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Syntax {
     Code,
-    /// CSS and its dialects: a rule declares its selector, and there are
-    /// mixins, keyframes, variables and custom properties.
     Sheet,
-    /// HTML outside its scripts and styles: an element with an `id` is what
-    /// the rest of the code refers to.
     Markup,
-    /// Markdown and its kin: a heading is what a document declares. A fenced
-    /// block of code inside it is quoted, not declared: a README that shows
-    /// `fn main` is not where `main` is defined.
     Prose,
     Quoted,
 }
 
-/// The syntax of every line of a file, from its extension and, where one file
-/// holds several -- a page, a single-file component -- from its `<style>` and
-/// `<script>` sections.
 fn syntax_of(relative: &str, lines: &[&str]) -> Vec<Syntax> {
     let extension = relative.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
     let outside = match extension.as_str() {
@@ -1347,7 +1201,6 @@ fn syntax_of(relative: &str, lines: &[&str]) -> Vec<Syntax> {
         _ => return vec![Syntax::Code; lines.len()],
     };
     let mut current = outside;
-    // A fence opens a block of code and the next fence closes it.
     let mut fenced = false;
     lines
         .iter()
@@ -1374,9 +1227,6 @@ fn syntax_of(relative: &str, lines: &[&str]) -> Vec<Syntax> {
         .collect()
 }
 
-/// What a line of a stylesheet declares: the first class or id of a rule's
-/// selector (else its element), a mixin, a function, keyframes, a placeholder,
-/// a top-level variable, a custom property. Hyphens belong to these names.
 fn declared_in_sheet(line: &str) -> Option<&str> {
     static AT_RULE: OnceLock<Regex> = OnceLock::new();
     static VARIABLE: OnceLock<Regex> = OnceLock::new();
@@ -1385,15 +1235,12 @@ fn declared_in_sheet(line: &str) -> Option<&str> {
     let at_rule = AT_RULE.get_or_init(|| {
         Regex::new(r"^@(?:mixin|function|keyframes|-webkit-keyframes)\s+([A-Za-z_][\w-]*)").expect("a valid regex")
     });
-    // `$gap: 8px` where a file declares it, `--gap: 8px` wherever it is set.
     let variable = VARIABLE
         .get_or_init(|| Regex::new(r"^(?:(\$[A-Za-z_][\w-]*)|\s+(--[A-Za-z_][\w-]*)|(--[A-Za-z_][\w-]*))\s*:").expect("a valid regex"));
     let hook = HOOK.get_or_init(|| Regex::new(r"[.#%]([A-Za-z_][\w-]*)").expect("a valid regex"));
-    // `*` and `*:focus-visible` are rules about everything, named `*`.
     let element = ELEMENT.get_or_init(|| Regex::new(r"^(?::{0,2}([A-Za-z][\w-]*)|(\*))").expect("a valid regex"));
 
     let trimmed = line.trim();
-    // `* text` continues a comment; `*:focus-visible {` is a rule.
     if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("* ") || trimmed == "*" || trimmed.starts_with("*/") {
         return None;
     }
@@ -1403,17 +1250,11 @@ fn declared_in_sheet(line: &str) -> Option<&str> {
     if let Some(found) = variable.captures(line) {
         return found.iter().skip(1).flatten().next().map(|name| name.as_str());
     }
-    // A rule opens a block; `@media (...) {` and `@include x {` open one too
-    // and declare nothing.
     if trimmed.starts_with('@') {
         return None;
     }
-    // The selector is what precedes the brace, whether the rule goes on below
-    // or is written out on this one line: `.chip { padding: 0 8px; }`.
     let (selector, _) = trimmed.split_once('{')?;
     let selector = selector.trim_end();
-    // `font: {` is a nested property and `width: calc(#{$gap})` a value; a
-    // selector has no `: ` in it, only `:hover`.
     if selector.is_empty() || selector.ends_with([':', '#']) || selector.contains(": ") || selector.contains(';') {
         return None;
     }
@@ -1421,16 +1262,10 @@ fn declared_in_sheet(line: &str) -> Option<&str> {
         .or_else(|| element.captures(selector))
         .and_then(|found| found.get(1).or_else(|| found.get(2)))
         .map(|name| name.as_str())
-        // The steps of an animation are not what a stylesheet declares.
         .filter(|name| !matches!(*name, "from" | "to"))
 }
 
-/// What each line of a file declares where that is not code: a stylesheet's
-/// names, a page's ids. Read over the whole file, because a nested rule is
-/// named by the rules it sits in: under `.card`, `&__title` declares
-/// `card__title` -- the name the markup uses and no search by text can find.
 fn styled_names(lines: &[&str], syntax: &[Syntax]) -> Vec<Option<String>> {
-    // The rules a line sits in, by indentation, innermost last.
     let mut within: Vec<(usize, String)> = Vec::new();
     lines
         .iter()
@@ -1463,8 +1298,6 @@ fn styled_names(lines: &[&str], syntax: &[Syntax]) -> Vec<Option<String>> {
                     None => declared_in_sheet(line).map(str::to_owned),
                 };
                 if opens {
-                    // `&:hover` and `@media` name nothing, and what is nested
-                    // in them still belongs to the rule around them.
                     let carried = name.clone().or_else(|| within.last().map(|(_, name)| name.clone()));
                     if let Some(carried) = carried {
                         within.push((indent, carried));
@@ -1476,26 +1309,19 @@ fn styled_names(lines: &[&str], syntax: &[Syntax]) -> Vec<Option<String>> {
         .collect()
 }
 
-/// The `id` an element is given, which is how scripts and styles refer to it.
 fn declared_in_markup(line: &str) -> Option<&str> {
     static ID: OnceLock<Regex> = OnceLock::new();
     static TEMPLATE: OnceLock<Regex> = OnceLock::new();
-    // A named template -- Go's `{{define "x"}}`, Jinja's and Twig's
-    // `{% block x %}` and `{% macro x(`, Django's too -- is what the other
-    // templates and the code refer to, by that name.
     let template = TEMPLATE.get_or_init(|| {
         Regex::new(r#"\{\{-?\s*(?:define|block)\s+"([^"]+)"|\{%-?\s*(?:block|macro)\s+([A-Za-z_][\w-]*)"#).expect("a valid regex")
     });
     if let Some(found) = template.captures(line) {
         return found.get(1).or_else(|| found.get(2)).map(|name| name.as_str());
     }
-    // An id is written in whatever alphabet the page is.
     let id = ID.get_or_init(|| Regex::new(r#"\sid=["']([\p{L}_][\p{L}\p{N}_-]*)["']"#).expect("a valid regex"));
     id.captures(line).and_then(|found| found.get(1)).map(|name| name.as_str())
 }
 
-/// A heading, as a document's own name for the section it opens: `## Setup`
-/// declares `Setup`, with its marks, links and trailing hashes taken off.
 fn declared_in_prose(line: &str) -> Option<&str> {
     let rest = line.strip_prefix('#')?;
     let level = 1 + rest.chars().take_while(|&c| c == '#').count();
@@ -1503,7 +1329,6 @@ fn declared_in_prose(line: &str) -> Option<&str> {
         return None;
     }
     let title = rest.trim_start_matches('#');
-    // `#hashtag` and `#[derive]` are not headings; a heading has a space.
     if !title.starts_with([' ', '\t']) {
         return None;
     }
@@ -1511,7 +1336,6 @@ fn declared_in_prose(line: &str) -> Option<&str> {
     (!title.is_empty()).then_some(title)
 }
 
-/// The identifiers a run of lines declares, and the line of each.
 fn names_in(
     lines: &[&str],
     syntax: &[Syntax],
@@ -1522,8 +1346,6 @@ fn names_in(
     let mut name_lines = Vec::new();
     for (offset, line) in lines.iter().enumerate() {
         if syntax.get(offset).is_some_and(|syntax| *syntax != Syntax::Code) {
-            // A stylesheet says `.card__icon` again under each modifier, and
-            // every place it does is a place the agent has to know about.
             if let Some(name) = styled.get(offset).and_then(Option::as_ref) {
                 names.push(name.clone());
                 name_lines.push(first_line + offset as u32);
@@ -1536,8 +1358,6 @@ fn names_in(
         let next = lines[offset + 1..].iter().map(|line| line.trim()).find(|line| !line.is_empty());
         let name = match declared_name(line, next) {
             Some(name) => name.to_owned(),
-            // A signature too long for its line: read it as the one line it
-            // would have been, and only if what it reaches is a body.
             None => match unwrapped(&lines[offset..]) {
                 Some(whole) => match declared_name(&whole, None) {
                     Some(name) => name.to_owned(),
@@ -1558,9 +1378,6 @@ fn names_in(
     (names, name_lines)
 }
 
-/// A top-level line that breaks off inside its parameters, joined with what
-/// follows it up to the brace that opens a body. A prototype ends in `;` and
-/// is not joined: it declares nothing that is not defined elsewhere.
 fn unwrapped(lines: &[&str]) -> Option<String> {
     const MAX_CONTINUATIONS: usize = 8;
     let first = lines.first()?;
@@ -1583,32 +1400,22 @@ fn unwrapped(lines: &[&str]) -> Option<String> {
     None
 }
 
-/// What `line` declares, if it declares anything. `next` is the next line
-/// that is not blank, for the brace a declaration may leave to it.
 fn declared_name<'a>(line: &'a str, next: Option<&str>) -> Option<&'a str> {
     static DECLARATION: OnceLock<Regex> = OnceLock::new();
     let declaration = DECLARATION.get_or_init(|| {
         Regex::new(
-            // A declaring keyword opens its line, behind modifiers at most:
-            // prose and markup say `type`, `object` and `record` mid-sentence.
             r#"^(\s*)(?:(?:export|default|declare|pub(?:\([^)]*\))?|async|public|private|protected|static|abstract|final|readonly|override|internal|open|sealed|inline|virtual|partial|data|unsafe|const|typedef|extern(?:\s+"[^"]*")?)\s+)*(fn|struct|enum|trait|impl|mod|type|const|static|union|macro_rules!|class|def|function|interface|func|fun|object|module|record|protocol|extension|defmodule|defp?)(?:<[^>]*>)?\s+(?:\([^)]*\)\s*)?([A-Za-z_$][A-Za-z0-9_$]*)"#,
         )
         .expect("the declaration pattern is a valid regex")
     });
-    // A function without a keyword -- C, C++, Java, C#, a TypeScript member --
-    // is types and modifiers, a name, parameters, and the brace that opens its
-    // body. No `=` and no `;`, so neither a call nor a prototype is one.
     static CALLABLE: OnceLock<Regex> = OnceLock::new();
     let callable = CALLABLE.get_or_init(|| {
         Regex::new(r"^(\s*)((?:[A-Za-z_$][\w$<>\[\],.?:]*[\s*&]+)*)([A-Za-z_$][\w$]*)\s*(?:<[^>()]*>)?\([^;=]*\)[^;=(]*\{\s*$")
             .expect("the callable pattern is a valid regex")
     });
-    // `} name_t;` closes a C typedef and is the only line that names it.
     static CLOSER: OnceLock<Regex> = OnceLock::new();
     let closer = CLOSER
         .get_or_init(|| Regex::new(r"^\}\s*([A-Za-z_][A-Za-z0-9_]*)\s*;").expect("the closer pattern is a valid regex"));
-    // A constant by its spelling, alone on its line: an enum member, a
-    // module-level `MAX_RETRIES = 3`.
     static CONSTANT: OnceLock<Regex> = OnceLock::new();
     let constant = CONSTANT.get_or_init(|| {
         Regex::new(r"^\s*([A-Z_][A-Z0-9_]{2,}[A-Z0-9])\s*(?:=\s*[^=;{(\[]+)?,?\s*(?:(?://|#|/\*).*)?$")
@@ -1635,21 +1442,13 @@ fn declared_name<'a>(line: &'a str, next: Option<&str>) -> Option<&'a str> {
         let (indent, keyword) = (&found[1], &found[2]);
         let name = found.get(3)?;
         let rest = line[name.end()..].trim_start();
-        // `struct tm now;`, `struct node *next`, `static int count(` use a
-        // type; they do not declare one. What follows a declared name is
-        // punctuation -- a brace, a colon, generics, nothing -- not another word.
         let uses_a_type = matches!(keyword, "struct" | "enum" | "union" | "static" | "const" | "type")
             && rest.starts_with(|c: char| c == '*' || c == '&' || c == '_' || c.is_alphabetic());
         if !uses_a_type {
             let name = name.as_str();
-            // `function use (`, `static function`: a keyword after a declaring
-            // keyword is not what is being declared.
             if KEYWORDS.contains(&name) {
                 return None;
             }
-            // A `const` inside a body is a local, not something a file
-            // declares -- unless it is spelled the way constants are, or is a
-            // function, which is how a composable or a store declares its own.
             let nested = !indent.is_empty();
             let shouted = !name.chars().any(char::is_lowercase);
             let function = line.contains("=>") || line.contains("function");
@@ -1660,19 +1459,15 @@ fn declared_name<'a>(line: &'a str, next: Option<&str>) -> Option<&'a str> {
         }
     }
 
-    // The brace may sit on its own line below (`int main(void)` / `{`).
     let found = match callable.captures(line) {
         Some(found) => found,
         None if next == Some("{") && trimmed.trim_end().ends_with(')') => {
             let opened = format!("{} {{", line.trim_end());
             let name = callable.captures(&opened)?.get(3)?.range();
-            // Where the name sits in `opened` is where it sits in `line`.
             return checked_callable(&line[name], line.len() - trimmed.len(), true);
         }
         None => return None,
     };
-    // `switch len(parts) {`, `return int(count) {`: what precedes the name
-    // has to be types and modifiers, not a statement.
     let mut before = found[2].split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|word| !word.is_empty());
     if before.any(|word| CONTROL.contains(&word) || matches!(word, "if" | "for" | "while" | "new")) {
         return None;
@@ -1683,17 +1478,12 @@ fn declared_name<'a>(line: &'a str, next: Option<&str>) -> Option<&'a str> {
 }
 
 fn checked_callable(name: &str, indent: usize, has_type: bool) -> Option<&str> {
-    // At the top level a bare `name(args) {` is a call followed by a block in
-    // most languages; with a type in front of it, it is a definition.
     if indent == 0 && !has_type {
         return None;
     }
     (!KEYWORDS.contains(&name) && !CONTROL.contains(&name)).then_some(name)
 }
 
-/// What is committed to many repositories and is never what anyone is looking
-/// for: dependencies, build output, lock files, minified bundles, source maps.
-/// An ignore file is still the way to exclude anything else.
 fn is_junk(relative: &Path) -> bool {
     let in_junk_dir = relative.parent().is_some_and(|parent| {
         parent.components().any(|part| {
@@ -1721,8 +1511,6 @@ fn is_junk(relative: &Path) -> bool {
         || name.ends_with(".snap")
 }
 
-/// A file of checks that does not sit where tests are expected: it is mostly
-/// assertions. Rust is left out, because its tests live inside the file they test.
 fn reads_as_tests(text: &str) -> bool {
     const MARKS: &[&str] = &[
         "assert.", "assert(", "assertEquals(", "assertTrue(", "assert_eq!(", "expect(", "describe(",
@@ -1743,10 +1531,6 @@ fn reads_as_tests(text: &str) -> bool {
     checking >= 6 && checking * 100 >= lines * 5
 }
 
-/// Code written by a bundler rather than a person: a few enormous lines.
-/// A bundle: long lines throughout. A page whose lines are long because each
-/// holds an inline SVG or a one-line template is not one -- it still breaks
-/// where a person broke it, so the longest run of long lines is short.
 fn is_minified(text: &str) -> bool {
     let lines = text.lines().count().max(1);
     if text.len() <= 4096 || text.len() / lines <= 400 {
@@ -1815,7 +1599,6 @@ mod tests {
             "}",
         ];
         assert_eq!(names_in(&definition, &[], &[], 314), (vec!["kt_find_extension_receiver".to_owned()], vec![314]));
-        // The same, ending in `;`, is a prototype and declares nothing here.
         let prototype = ["int cbm_store_upsert(cbm_store_t *store, const cbm_node_t *node,", "                     int flags);"];
         assert_eq!(names_in(&prototype, &[], &[], 1).0, Vec::<String>::new());
     }
@@ -1823,41 +1606,41 @@ mod tests {
     #[test]
     fn what_a_stylesheet_and_a_page_declare() {
         let sheet = [
-            "$grid-gap: 8px;",                       // 1
-            "@mixin truncate($lines) {",             // 2
-            "  overflow: hidden;",                   // 3
-            "}",                                     // 4
-            ".card {",                               // 5
-            "  --card-radius: 4px;",                 // 6
-            "  &__title {",                          // 7
-            "    font: {",                           // 8
-            "      weight: 600;",                    // 9
-            "    }",                                 // 10
-            "    &--active {",                       // 11
-            "      color: red;",                     // 12
-            "    }",                                 // 13
-            "  }",                                   // 14
-            "  &:hover {",                           // 15
-            "    .card__icon, .other {",             // 16
-            "    }",                                 // 17
-            "  }",                                   // 18
-            "  @media (min-width: 600px) {",         // 19
-            "    &__body {",                         // 20
-            "    }",                                 // 21
-            "  }",                                   // 22
-            "}",                                     // 23
-            "@keyframes fade-in {",                  // 24
-            "  from {",                              // 25
-            "  }",                                   // 26
-            "}",                                     // 27
-            ":root {",                               // 28
-            "#site-header > nav {",                  // 29
-            "  width: calc(#{$grid-gap} * 2);",      // 30
-            "}",                                     // 31
-            ".chip { padding: 0 8px; }",             // 32
-            "*:focus-visible {",                     // 33
-            "  outline: 2px solid red;",             // 34
-            "}",                                     // 35
+            "$grid-gap: 8px;",
+            "@mixin truncate($lines) {",
+            "  overflow: hidden;",
+            "}",
+            ".card {",
+            "  --card-radius: 4px;",
+            "  &__title {",
+            "    font: {",
+            "      weight: 600;",
+            "    }",
+            "    &--active {",
+            "      color: red;",
+            "    }",
+            "  }",
+            "  &:hover {",
+            "    .card__icon, .other {",
+            "    }",
+            "  }",
+            "  @media (min-width: 600px) {",
+            "    &__body {",
+            "    }",
+            "  }",
+            "}",
+            "@keyframes fade-in {",
+            "  from {",
+            "  }",
+            "}",
+            ":root {",
+            "#site-header > nav {",
+            "  width: calc(#{$grid-gap} * 2);",
+            "}",
+            ".chip { padding: 0 8px; }",
+            "*:focus-visible {",
+            "  outline: 2px solid red;",
+            "}",
         ];
         let syntax = super::syntax_of("theme/card.scss", &sheet);
         let styled = super::styled_names(&sheet, &syntax);
@@ -1882,8 +1665,6 @@ mod tests {
             ]
         );
 
-        // A component is code, except between its style tags; a page is markup
-        // outside its scripts and styles.
         let component = ["<script setup>", "const open = ref(false)", "</script>", "<style scoped>", ".menu {", "}", "</style>"];
         let syntax = super::syntax_of("Menu.vue", &component);
         let styled = super::styled_names(&component, &syntax);
@@ -1897,7 +1678,6 @@ mod tests {
     #[test]
     fn what_a_line_declares() {
         let cases: &[(&str, Option<&str>, Option<&str>)] = &[
-            // C: the name, not the return type; every one of them, not the first `void`.
             ("static int bind_text(sqlite3_stmt *s, int col, const char *v) {", None, Some("bind_text")),
             ("static const char *safe_str(const char *s) {", None, Some("safe_str")),
             ("cbm_store_t *cbm_store_open(const char *path)", Some("{"), Some("cbm_store_open")),
@@ -1921,17 +1701,14 @@ mod tests {
             ("\t\treturn int(count) {", None, None),
             ("    } else if (ready(x)) {", None, None),
             ("    return helper(a, b);", None, None),
-            // Rust
             ("pub(crate) async fn refreshed(self) -> Self {", None, Some("refreshed")),
             ("static DECLARATION: OnceLock<Regex> = OnceLock::new();", None, Some("DECLARATION")),
             ("impl<T> Shelf<T> {", None, Some("Shelf")),
-            // TypeScript / Vue
             ("  async onResponse({ response }): Promise<void> {", None, Some("onResponse")),
             ("export const useCart = (key: string) => {", None, Some("useCart")),
             ("  const total = items.length;", None, None),
             ("const v$ = useValidate(rules, form)", None, Some("v$")),
             ("describe('cart', () => {", None, None),
-            // Go, Python, PHP
             ("func (s *Session) ValidateToken(token string) error {", None, Some("ValidateToken")),
             ("    def chunk_file(self, path: str) -> list[Chunk]:", None, Some("chunk_file")),
             ("    public function toPayload(): OrderPayload", Some("{"), Some("toPayload")),

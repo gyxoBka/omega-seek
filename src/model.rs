@@ -1,9 +1,3 @@
-//! Where the static model lives, and how it gets there.
-//!
-//! The model is three files at a pinned revision, each checked against the
-//! digest recorded here, so what is loaded is what the numbers in the README
-//! were measured with.
-
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,10 +9,8 @@ const FILES: &[(&str, &str)] = &[
     ("tokenizer.json", "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45"),
     ("model.safetensors", "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c"),
 ];
-/// Nothing the model ships is larger than this; a response that is, is not it.
 const MAX_BYTES: u64 = 64 << 20;
 
-/// The model to load: the installed one, else one Hugging Face already cached.
 #[must_use]
 pub fn locate() -> Option<PathBuf> {
     installed_dir()
@@ -26,7 +18,6 @@ pub fn locate() -> Option<PathBuf> {
         .or_else(hugging_face_cache)
 }
 
-/// Download the pinned model into the data directory, verifying every file.
 pub fn install() -> Result<PathBuf, String> {
     let dir = installed_dir().ok_or("no home directory to install the model under")?;
     if is_complete(&dir) {
@@ -49,8 +40,6 @@ pub fn install() -> Result<PathBuf, String> {
         if digest != *expected {
             return Err(format!("{name}: digest {digest} is not the pinned {expected}"));
         }
-        // Written aside and renamed, so an interrupted install is not mistaken
-        // for a complete one.
         let partial = dir.join(format!("{name}.partial"));
         std::fs::write(&partial, &bytes)
             .and_then(|()| std::fs::rename(&partial, dir.join(name)))

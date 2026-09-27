@@ -1,9 +1,3 @@
-//! The table of contents of a file or a directory.
-//!
-//! What a file declares, with line numbers, costs a few dozen lines to read;
-//! the file itself costs thousands. An agent that sees the contents first can
-//! decide whether the file matters and read only the part that does.
-
 use crate::index::{Index, Kind};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -11,7 +5,6 @@ use std::fmt::Write as _;
 const MAX_SIGNATURE_CHARS: usize = 120;
 const MAX_CANDIDATES: usize = 15;
 const MAX_ENTRIES: usize = 80;
-/// Names shown beside a file in a directory listing.
 const NAMES_PER_FILE: usize = 6;
 
 #[must_use]
@@ -32,7 +25,6 @@ pub fn outline(index: &Index, asked: &str) -> String {
     if index.files.iter().any(|file| file.path.starts_with(&prefix)) {
         return directory(index, &prefix);
     }
-    // A bare file name, or the tail of a path.
     let mut matches: Vec<usize> = (0..index.files.len())
         .filter(|&file| {
             let path = &index.files[file].path;
@@ -46,10 +38,6 @@ pub fn outline(index: &Index, asked: &str) -> String {
     }
     match matches.as_slice() {
         [] => {
-            // A guessed path is usually nearly right: the name is close to a
-            // real one, or the directory exists. A few near names and where to
-            // look cost a line each; the whole directory would cost a page for
-            // one wrong word.
             let mut out = format!("No indexed file or directory matches `{asked}`.\n");
             let mut parent = asked;
             let mut holds = None;
@@ -62,8 +50,6 @@ pub fn outline(index: &Index, asked: &str) -> String {
                 }
                 parent = above;
             }
-            // Only the directory that was named vouches for loose matches: one
-            // found further up holds half the repository.
             let named = asked.rsplit_once('/').map(|(directory, _)| directory);
             let beside = holds
                 .as_ref()
@@ -95,13 +81,9 @@ pub fn outline(index: &Index, asked: &str) -> String {
     }
 }
 
-/// A run of custom properties at least this long is one outline entry.
 const FOLDED_PROPERTIES: usize = 6;
-/// A stylesheet declaring more rules than this is outlined by block.
 const GROUPED_RULES: usize = 120;
 
-/// The block a stylesheet name belongs to: `table__row`, `table--wide`,
-/// `table_row` and `table` are all `table`; `--gap` and `$gap` are variables.
 fn block_of(name: &str) -> &str {
     if name.starts_with("--") || name.starts_with('$') {
         return "variables";
@@ -113,15 +95,10 @@ fn block_of(name: &str) -> &str {
         .unwrap_or(name.len());
     &name[..end]
 }
-/// Names shown for a path that matched nothing.
 const NEAR_NAMES: usize = 5;
-/// Shared trigrams, as a share of both names, below which a name is not near.
 const NEAR_ENOUGH: f32 = 0.3;
 const NEAR_ELSEWHERE: f32 = 0.6;
 
-/// The files whose names are most like the one asked for, those under
-/// `beside` first among equals: a wrong name in the right directory is the
-/// common mistake, the right name in a wrong directory the next.
 fn near_names(index: &Index, asked: &str, beside: Option<&str>) -> Vec<usize> {
     let stem = |path: &str| {
         let name = path.rsplit('/').next().unwrap_or(path);
@@ -140,11 +117,8 @@ fn near_names(index: &Index, asked: &str, beside: Option<&str>) -> Vec<usize> {
             let has = trigrams(&stem(&entry.path));
             let shared = wanted.iter().filter(|three| has.contains(three)).count();
             let likeness = 2.0 * shared as f32 / (wanted.len() + has.len()) as f32;
-            // In the directory that was named a loose likeness will do, and
-            // comes first; elsewhere only a name that is nearly the same.
             let beside = beside.is_some_and(|prefix| entry.path.starts_with(prefix));
             let enough = if beside { NEAR_ENOUGH } else { NEAR_ELSEWHERE };
-            // A test is named after what it tests and would take its place twice.
             let place = if beside { 1.0 } else { 0.0 } - if entry.kind == Kind::Test { 0.5 } else { 0.0 };
             (likeness >= enough).then_some((likeness + place, file))
         })
@@ -159,8 +133,6 @@ fn file_outline(index: &Index, file: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = format!("{}{}  ({} lines{})\n", index.label, entry.path, lines.len(), kind_note(entry.kind));
 
-    // Every declaration once, in file order: chunks cut as windows overlap
-    // and would list what lies in both twice.
     let mut declared: Vec<(u32, &str)> = index
         .chunks
         .iter()
@@ -170,11 +142,6 @@ fn file_outline(index: &Index, file: usize) -> String {
     declared.sort_unstable();
     declared.dedup_by_key(|(line, _)| *line);
 
-    // A stylesheet of a whole application declares hundreds of rules, most
-    // of them one line each, and listing all of them would cost more than
-    // reading the file. They are grouped by the block they belong to --
-    // `.table`, `.table__row`, `.table--wide` are one block -- with where the
-    // block's rules lie, and a block is opened with `path`.
     let sheet = entry.path.rsplit('.').next().is_some_and(|ext| matches!(ext, "css" | "scss" | "less" | "pcss" | "postcss"));
     if sheet && declared.len() > GROUPED_RULES {
         let mut blocks: Vec<(String, u32, u32, usize)> = Vec::new();
@@ -203,7 +170,6 @@ fn file_outline(index: &Index, file: usize) -> String {
             at += 1;
             continue;
         };
-        // Nesting is kept, so a method reads as its class's.
         let columns: usize = source
             .chars()
             .take_while(|c| c.is_whitespace())
@@ -211,9 +177,6 @@ fn file_outline(index: &Index, file: usize) -> String {
             .sum();
         let depth = columns.div_ceil(4).min(3);
         let indent = "  ".repeat(depth);
-        // A theme sets custom properties by the hundred, one a line; they are
-        // one entry here, as are a sheet of `$variables`; `search` or `usages`
-        // answers about any one of them.
         let run = declared[at..].iter().take_while(|(_, name)| name.starts_with("--") || name.starts_with('$')).count();
         if run >= FOLDED_PROPERTIES {
             let (last, _) = declared[at + run - 1];
@@ -222,10 +185,8 @@ fn file_outline(index: &Index, file: usize) -> String {
             continue;
         }
         let signature = source.trim();
-        // A rule written out on one line is its selector here, not its body.
         let signature = if sheet { signature.split('{').next().unwrap_or(signature) } else { signature };
         let signature = signature.trim_end_matches(['{', '(', ':']).trim_end();
-        // A nested rule is written as `&__title` and known as `card__title`.
         let known_as = if signature.starts_with('&') { format!("  = {name}") } else { String::new() };
         let _ = writeln!(out, "{line:>6}  {indent}{}{known_as}", clip(signature));
         at += 1;
@@ -237,7 +198,6 @@ fn file_outline(index: &Index, file: usize) -> String {
 }
 
 fn directory(index: &Index, prefix: &str) -> String {
-    // Immediate files with what they declare; deeper ones counted by directory.
     let mut files: Vec<(usize, &str)> = Vec::new();
     let mut below: BTreeMap<&str, usize> = BTreeMap::new();
     for (file, entry) in index.files.iter().enumerate() {
@@ -257,7 +217,6 @@ fn directory(index: &Index, prefix: &str) -> String {
     for &(file, name) in files.iter().take(MAX_ENTRIES.saturating_sub(below.len())) {
         let chunks = index.chunks.iter().filter(|chunk| chunk.file as usize == file);
         let length = chunks.clone().map(|chunk| chunk.end_line).max().unwrap_or(0);
-        // A document is named by its title; its sections are its own business.
         let shown = if index.files[file].kind == Kind::Docs { 1 } else { NAMES_PER_FILE };
         let names: Vec<&str> = chunks
             .flat_map(|chunk| chunk.names.iter().map(String::as_str))

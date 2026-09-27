@@ -1,12 +1,3 @@
-//! Where an identifier is declared and where it is used -- or where any text
-//! is written: an error message, a route, a configuration key.
-//!
-//! What grep gives, minus what makes grep expensive to read: whole-word
-//! matches only, comment lines dropped, the declaration first, every other
-//! line labelled with the declaration it sits in, tests last, and a bound on
-//! how much is printed. Matching is by name, not by type: two unrelated things
-//! with one name are reported together.
-
 use crate::index::{Index, Kind};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
@@ -14,9 +5,7 @@ use std::fmt::Write as _;
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Lines printed at most; the rest are counted per file.
     pub limit: usize,
-    /// Only paths containing this.
     pub path: Option<String>,
 }
 
@@ -32,7 +21,6 @@ impl Default for Options {
 struct Line {
     number: u32,
     text: String,
-    /// The declaration this line sits in, if one precedes it in the file.
     inside: Option<String>,
     declares: bool,
 }
@@ -43,17 +31,10 @@ struct FileUsages {
     lines: Vec<Line>,
 }
 
-/// What is being looked for.
 #[derive(Clone, Copy)]
 enum Needle<'a> {
-    /// An identifier: whole-word matches in code, comment lines dropped.
     Word(&'a str),
-    /// Anything else -- an error message, a route, a config key: the text as
-    /// written, wherever it is written.
     Text(&'a str),
-    /// A regular expression, tried on every line of every indexed file: what
-    /// grep is reached for, without the dependencies, build output and
-    /// generated files that grep also walks into.
     Pattern(&'a regex::Regex),
 }
 
@@ -75,9 +56,6 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
     if asked.is_empty() {
         return "`symbol` is empty.".to_owned();
     }
-    // `Session::refresh`, `$this->check`, `pkg.Validate`: a path of identifiers asks
-    // for the last of them. Anything with a space, a slash or a quote in it is
-    // text to be found as written.
     let is_part = |c: char| c.is_alphanumeric() || c == '_';
     let path_of_names = asked
         .split("::")
@@ -89,9 +67,6 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
         _ => Needle::Text(asked),
     };
 
-    // `cart.clear` has the shape of `pkg.Validate` and may be neither: the name
-    // of an operation, an event, a config key. Code that writes it in quotes
-    // settles it, and then its last word alone would answer about every `clear`.
     let qualified = matches!(needle, Needle::Word(name) if name != asked);
     if qualified {
         let mut written = collect(index, Needle::Text(asked), options.path.as_deref());
@@ -108,7 +83,6 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
 
     let mut found = collect(index, needle, options.path.as_deref());
     if found.is_empty() {
-        // Outside `path` the dotted name may be written in quotes after all.
         if qualified && options.path.is_some() {
             let written = collect(index, Needle::Text(asked), None);
             if written.iter().flat_map(|file| &file.lines).any(|line| is_quoted(&line.text, asked)) {
@@ -140,10 +114,6 @@ pub fn usages(index: &Index, asked: &str, options: &Options) -> String {
     out
 }
 
-/// Every line a regular expression matches, in the indexed files only: grep
-/// without the dependencies, build output and generated files grep walks into,
-/// and with what `usages` adds -- the declaration each line sits in, tests
-/// last, a bound on what is printed.
 #[must_use]
 pub fn grep(index: &Index, asked: &str, options: &Options) -> String {
     if index.files.is_empty() {
@@ -169,8 +139,6 @@ pub fn grep(index: &Index, asked: &str, options: &Options) -> String {
     render(&index.label, &format!("/{asked}/"), "Matched", &mut found, options)
 }
 
-/// What to say when nothing was found under `path`: "none here" must not read
-/// as "none anywhere", or the agent concludes the thing does not exist.
 fn elsewhere(index: &Index, needle: Needle, path: Option<&str>) -> Option<String> {
     let path = path?;
     let shown = match needle {
@@ -198,7 +166,6 @@ fn elsewhere(index: &Index, needle: Needle, path: Option<&str>) -> Option<String
     ))
 }
 
-/// Whether `line` writes `text` as a string, or as the head or tail of one.
 fn is_quoted(line: &str, text: &str) -> bool {
     let quote = |c: char| matches!(c, '"' | '\'' | '`');
     line.match_indices(text).any(|(at, _)| {
@@ -206,7 +173,6 @@ fn is_quoted(line: &str, text: &str) -> bool {
     })
 }
 
-/// How many lines other than its declarations name `symbol`, and in how many files.
 #[must_use]
 pub fn count(index: &Index, symbol: &str) -> (usize, usize) {
     let found = collect(index, Needle::Word(symbol), None);
@@ -218,15 +184,8 @@ pub fn count(index: &Index, symbol: &str) -> (usize, usize) {
     (others, found.len())
 }
 
-/// Every line that holds the needle, by file.
 fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages> {
     let symbol = needle.text();
-    // A file that holds the needle holds every term of it, so the postings say
-    // which files are worth reading: those of the rarest term, narrowed by the
-    // others. Text with no terms at all -- punctuation -- is looked for everywhere.
-    //
-    // Text may begin and end mid-word (`fig/ap`), and half a word is no term,
-    // so only its inner words narrow the candidates.
     let mut terms = Vec::new();
     match needle {
         Needle::Word(name) => index.tokenizer.terms(name, &mut terms),
@@ -236,8 +195,6 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
                 index.tokenizer.terms(&words[1..words.len() - 1].join(" "), &mut terms);
             }
         }
-        // Which words an expression requires is not worth working out for a
-        // scan that takes tens of milliseconds.
         Needle::Pattern(_) => {}
     }
     let files_of = |term: &String| -> Option<BTreeSet<u32>> {
@@ -260,12 +217,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         .filter(|&file| {
             let entry = &index.files[file as usize];
             let searched = match needle {
-                // An identifier is also written in the documentation -- a
-                // task id in a registry, a name in a design note -- and those
-                // lines come after the code's.
                 Needle::Word(_) => entry.kind != Kind::Config,
-                // A route or a key is as likely to sit in configuration, and
-                // a phrase in the documentation.
                 Needle::Text(_) => true,
                 Needle::Pattern(_) => true,
             };
@@ -273,9 +225,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         })
         .collect();
 
-    // `.btn-primary` and `#site-header` are declared as the name without its mark.
     let bare = symbol.trim_start_matches(['.', '#', '%']);
-    // Every declaration of each candidate file, by line, to label lines with.
     let mut declared: Vec<Vec<(u32, &str)>> = vec![Vec::new(); index.files.len()];
     for chunk in &index.chunks {
         if candidates.contains(&chunk.file) {
@@ -294,10 +244,7 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
                 .lines()
                 .enumerate()
                 .filter(|(offset, line)| match needle {
-                    // A `#` opens a comment in code and a heading in a document.
                     Needle::Word(name) => (entry.kind == Kind::Docs || !is_comment(line)) && has_word(line, name),
-                    // A nested rule declares a name its line does not spell:
-                    // `&__title` under `.card` is where `card__title` is.
                     Needle::Text(text) => {
                         line.contains(text)
                             || declared.iter().any(|&(at, name)| at == *offset as u32 + 1 && name == bare)
@@ -330,8 +277,6 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
 }
 
 fn render(label: &str, symbol: &str, listed: &str, found: &mut [FileUsages], options: &Options) -> String {
-    // Code before tests, and within each the files that use it most.
-    // Code before tests before documents, and within each the files that use it most.
     let order = |kind: Kind| match kind {
         Kind::Code | Kind::Config => 0,
         Kind::Test => 1,
@@ -402,9 +347,7 @@ fn render(label: &str, symbol: &str, listed: &str, found: &mut [FileUsages], opt
     out
 }
 
-/// Lines of one file printed in full; the rest are named by number.
 const PER_FILE: usize = 8;
-/// Files named, with their counts, once the line budget is spent.
 const UNSHOWN_FILES: usize = 10;
 const MAX_LINE_CHARS: usize = 160;
 
@@ -431,7 +374,6 @@ fn is_comment(line: &str) -> bool {
         || (line.starts_with('#') && !line.starts_with("#[") && !line.starts_with("#!") && !line.starts_with("#include") && !line.starts_with("#define"))
 }
 
-/// Whether `word` occurs in `line` with no identifier character on either side.
 fn has_word(line: &str, word: &str) -> bool {
     let is_part = |c: char| c.is_alphanumeric() || c == '_';
     line.match_indices(word).any(|(at, _)| {

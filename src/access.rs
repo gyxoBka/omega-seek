@@ -1,18 +1,3 @@
-//! What an agent may read outside its own repository.
-//!
-//! A harness usually keeps an agent inside the repository it was started in;
-//! an MCP server is a process of its own that the harness does not restrain,
-//! so without a rule of ours a `root` could read any directory on the machine
-//! -- and index it. The rule: the repository an agent was started in, and its
-//! worktrees, are always readable; anything else only once the user has
-//! given that repository access to it, with `omega access add` run inside it.
-//!
-//! Access is kept in omega's settings, not in the repository, where the agent
-//! could write it for itself. It is keyed by the main checkout, so that every
-//! worktree of a repository has what the repository has. The command line is
-//! not restrained: an agent reaches it through a shell, which the harness
-//! already governs.
-
 use crate::roots::{self, clean, shown};
 use serde_json::{Map, Value};
 use std::io::IsTerminal as _;
@@ -20,8 +5,6 @@ use std::path::{Path, PathBuf};
 
 const KEY: &str = "access";
 
-/// omega's settings, of which the access given to each repository is one key;
-/// the others are kept as they are.
 #[derive(Debug, Default)]
 pub struct Access {
     settings: Map<String, Value>,
@@ -29,7 +12,6 @@ pub struct Access {
 }
 
 impl Access {
-    /// The user's settings. None there yet is none given.
     pub fn load() -> Result<Self, String> {
         let file = crate::paths::settings().ok_or("cannot tell where omega's settings are kept")?;
         Self::load_from(&file)
@@ -50,7 +32,6 @@ impl Access {
         })
     }
 
-    /// Written beside and renamed over: a reader never sees half of it.
     pub fn save(&self) -> Result<(), String> {
         let file = self.file.as_deref().ok_or("these settings were not read from a file")?;
         if let Some(parent) = file.parent() {
@@ -88,7 +69,6 @@ impl Access {
         entry.as_object_mut().expect("just made an object")
     }
 
-    /// The directories `repository` (a main checkout) has been given.
     #[must_use]
     pub fn granted(&self, repository: &Path) -> Vec<PathBuf> {
         let Some(table) = self.table() else { return Vec::new() };
@@ -103,7 +83,6 @@ impl Access {
             .collect()
     }
 
-    /// Every repository given access, with what it was given.
     #[must_use]
     pub fn repositories(&self) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let Some(table) = self.table() else { return Vec::new() };
@@ -116,7 +95,6 @@ impl Access {
             .collect()
     }
 
-    /// Gives `repository` access to `directory`; false when it had it already.
     pub fn grant(&mut self, repository: &Path, directory: &Path) -> bool {
         if self.granted(repository).iter().any(|dir| same(dir, directory)) {
             return false;
@@ -130,7 +108,6 @@ impl Access {
         true
     }
 
-    /// Takes back `directory` from `repository`; false when it did not have it.
     pub fn revoke(&mut self, repository: &Path, directory: &Path) -> bool {
         let key = self.key_of(repository);
         let table = self.table_mut();
@@ -146,36 +123,29 @@ impl Access {
         changed
     }
 
-    /// Takes back everything `repository` was given.
     pub fn forget(&mut self, repository: &Path) -> bool {
         let key = self.key_of(repository);
         self.table_mut().remove(&key).is_some()
     }
 
-    /// The key a repository is stored under: the one already there, however
-    /// it was spelled, else the repository as shown.
     fn key_of(&self, repository: &Path) -> String {
         self.table()
             .and_then(|table| table.keys().find(|stored| same(Path::new(stored.as_str()), repository)).cloned())
             .unwrap_or_else(|| shown(repository))
     }
 
-    /// Whether an agent started in `home` may read `top` (both canonical).
     #[must_use]
     pub fn allows(&self, home: &Path, top: &Path) -> bool {
         if top.starts_with(home) {
             return true;
         }
         let repository = roots::repository(home);
-        // Another checkout of the same repository: a worktree, or the main one.
         if top.join(".git").exists() && roots::repository(top) == repository && repository.join(".git").exists() {
             return true;
         }
         self.granted(&repository).iter().any(|dir| top.starts_with(clean(dir)))
     }
 
-    /// What an agent started in `home` may read: its repository's checkouts,
-    /// and the directories that repository was given.
     #[must_use]
     pub fn readable(&self, home: &Path) -> Vec<String> {
         let repository = roots::repository(home);
@@ -194,8 +164,6 @@ impl Access {
         readable
     }
 
-    /// Why `top` is refused, what the user can do about it, and what is
-    /// readable instead: an agent told only "no" tries another way round.
     #[must_use]
     pub fn refusal(&self, home: &Path, top: &Path) -> String {
         let repository = roots::repository(home);
@@ -210,8 +178,6 @@ impl Access {
     }
 }
 
-/// Two paths naming one directory, as far as can be told without the disk:
-/// the same components, and on Windows whatever their case.
 fn same(a: &Path, b: &Path) -> bool {
     let (a, b) = (clean(a), clean(b));
     if cfg!(windows) {
@@ -221,8 +187,6 @@ fn same(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// `omega access`: give the repository of the current directory access to
-/// other directories, take it back, or see what it has.
 pub fn run(arguments: &[String], all: bool) -> Result<(), String> {
     let mut access = Access::load()?;
     let subcommand = arguments.first().map(String::as_str);
@@ -243,8 +207,6 @@ pub fn run(arguments: &[String], all: bool) -> Result<(), String> {
         Some("add") => {
             let directory = directory_argument(arguments.get(1), "add")?;
             roots::refuse_if_too_wide(&directory)?;
-            // Inside the repository, another checkout of it, or under what it
-            // was given: nothing to add.
             if access.allows(&repository, &directory) {
                 println!("  {} is readable from {} already.", shown(&directory), shown(&repository));
                 return Ok(());
@@ -277,14 +239,12 @@ pub fn run(arguments: &[String], all: bool) -> Result<(), String> {
     }
 }
 
-/// The directory an `add` or `remove` names, as it is on disk.
 fn directory_argument(given: Option<&String>, subcommand: &str) -> Result<PathBuf, String> {
     let given = given.ok_or_else(|| format!("`omega access {subcommand}` needs a directory"))?;
     let path = Path::new(given);
     match path.canonicalize() {
         Ok(found) if found.is_dir() => Ok(clean(&found)),
         Ok(_) => Err(format!("{given} is not a directory")),
-        // Taking back a directory that is gone must still be possible.
         Err(_) if subcommand == "remove" => Ok(clean(&std::env::current_dir().map_err(|error| error.to_string())?.join(path))),
         Err(_) => Err(format!("{given} does not exist")),
     }
@@ -331,7 +291,6 @@ fn take_back(access: &mut Access, repository: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `list --all` and `forget`: every repository at once, wherever this runs.
 fn run_everywhere(access: &mut Access, subcommand: Option<&str>, argument: Option<&String>) -> Result<(), String> {
     if subcommand == Some("forget") {
         let given = argument.ok_or("`omega access forget` needs the repository whose access to forget")?;

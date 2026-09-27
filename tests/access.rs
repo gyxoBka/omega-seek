@@ -1,19 +1,9 @@
-//! What an agent may read outside the repository it was started in.
-
 use omega::access::Access;
 use omega::roots::clean;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Checkouts laid out as git lays them out:
-///
-///   ws/app/.git/                    the main checkout of `app`
-///   ws/app/.git/worktrees/fix/      git's record of the worktree below
-///   ws/app-fix/.git                 a file: a linked worktree of `app`
-///   ws/lib/.git/, ws/other/.git/    two more repositories
-///
-/// Beside it, `ws-home` stands for the user's home directory.
 fn workspace(name: &str) -> PathBuf {
     let ws = std::env::temp_dir().join(format!("omega-access-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&ws);
@@ -32,8 +22,6 @@ fn workspace(name: &str) -> PathBuf {
     ws
 }
 
-/// Outside the workspace, as a home directory is: the directory above a home
-/// is refused as too wide, whatever access says.
 fn home_of(ws: &Path) -> PathBuf {
     ws.with_file_name(format!("{}-home", ws.file_name().unwrap().to_string_lossy()))
 }
@@ -78,7 +66,6 @@ fn access_given_to_a_repository_is_its_worktrees_and_no_one_else() {
     assert!(!access.allows(&other, &lib), "nor shared with other repositories");
     assert!(!access.allows(&app, &other));
 
-    // A parent directory given is every repository under it, and itself.
     let mut access = access;
     access.grant(&app, &ws);
     assert!(access.allows(&app, &other) && access.allows(&app, &ws));
@@ -107,7 +94,6 @@ fn settings_keep_what_is_not_ours_and_refuse_what_is_not_json() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// `omega` with its settings and caches under `ws`, as a user whose home is `ws/home`.
 fn omega(ws: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_omega"));
     for (name, dir) in [
@@ -165,12 +151,10 @@ fn a_directory_outside_is_refused_before_it_is_indexed_until_access_is_given() {
     let absolute = ws.join("lib/src/parse.rs").to_string_lossy().into_owned();
     let refused = call("outline", serde_json::json!({"path": absolute}));
     assert!(text(&refused).contains("omega access add"), "{}", text(&refused));
-    // Asking what is next door is answered with what is readable, not an error.
     let listed = call("outline", serde_json::json!({"path": "", "root": ".."}));
     assert!(listed["isError"].is_null() && text(&listed).contains("Readable now"), "{listed}");
     assert_eq!(stores(&ws), before, "nothing refused was indexed");
 
-    // Given, from the worktree, as a user would: read at the next call, no restart.
     let given = omega(&ws).args(["access", "add", "../lib"]).current_dir(ws.join("app-fix")).output().unwrap();
     assert!(given.status.success(), "{}", String::from_utf8_lossy(&given.stderr));
     let found = call("search", serde_json::json!({"query": "parse_lib", "root": "../lib"}));
@@ -224,7 +208,6 @@ fn stores_not_opened_for_a_month_are_pruned_and_nothing_else() {
     left.sort();
     assert_eq!(left, ["fresh.idx", "notes.txt"]);
 
-    // Opening a store marks it used.
     let store = dir.join("fresh.idx");
     std::fs::File::options().write(true).open(&store).unwrap().set_modified(old).unwrap();
     omega::store::touch(&store);

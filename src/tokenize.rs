@@ -1,12 +1,10 @@
 use rust_stemmers::{Algorithm, Stemmer};
 
-/// PostgreSQL (BSD licence) Snowball lists
 const ENGLISH_STOP: &str = include_str!("stop/english.txt");
 const RUSSIAN_STOP: &str = include_str!("stop/russian.txt");
 
 pub struct Tokenizer {
     stemmer: Stemmer,
-    /// Comments, strings and error messages are not always English.
     russian: Stemmer,
     stop: std::collections::HashSet<&'static str>,
 }
@@ -38,17 +36,10 @@ impl Tokenizer {
         }
     }
 
-    /// The terms of a text, in order, repeats kept.
-    ///
-    /// An identifier yields its stemmed parts -- `cleanup_prepared_assets` is
-    /// `cleanup`, `prepar`, `asset` -- so prose and code meet on the same
-    /// terms, and also itself whole, so asking for it by name still finds it.
     pub fn terms(&self, text: &str, out: &mut Vec<String>) {
         self.terms_of(text, false, out);
     }
 
-    /// `asked` drops the stop words, lowercased and before the stemmer sees
-    /// them, so that `какие` never reaches the index as `как`.
     fn terms_of(&self, text: &str, asked: bool, out: &mut Vec<String>) {
         let mut parts: Vec<&str> = Vec::new();
         for word in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
@@ -83,7 +74,6 @@ impl Tokenizer {
         }
     }
 
-    /// The distinct terms of a question, without the words around them.
     #[must_use]
     pub fn query_terms(&self, query: &str) -> Vec<String> {
         let mut all = Vec::new();
@@ -94,7 +84,6 @@ impl Tokenizer {
     }
 }
 
-/// `HTTPServer2` is `HTTP`, `Server`, `2`.
 fn split_camel<'a>(piece: &'a str, out: &mut Vec<&'a str>) {
     let chars: Vec<(usize, char)> = piece.char_indices().collect();
     let mut start = 0;

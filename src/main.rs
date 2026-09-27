@@ -91,8 +91,6 @@ fn run() -> Result<(), String> {
         None => omega::model::locate(),
     };
 
-    // A root that is not there would index nothing and answer "no matches":
-    // the agent would conclude the code does not exist.
     let reads_a_tree = matches!(
         command.as_str(),
         "search" | "outline" | "usages" | "grep" | "eval" | "mcp" | "index"
@@ -153,12 +151,8 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// `omega index`: the whole index of a repository, built before a session
-/// needs it and merged into the smallest store there is. An agent's first
-/// call in a large repository then waits for nothing.
 fn index(root: &Path, model: Option<&Path>) -> Result<(), String> {
     let started = Instant::now();
-    // Each stage rewrites its own line, and the next one starts on a new line.
     let shown = |progress: Progress| match progress {
         Progress::Reading { done, total } => {
             eprint!("\r  words        {done}/{total} files{}", if done == total { "\n" } else { "" });
@@ -185,8 +179,6 @@ fn index(root: &Path, model: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-/// `omega index --prune`: the stores of repositories not opened for a month,
-/// and whatever a crash left aside, removed now rather than at the next start.
 fn prune_stores() -> Result<(), String> {
     let dir = omega::paths::stores().ok_or("cannot tell where the index stores are kept")?;
     let (files, bytes) = omega::store::prune(&dir, omega::store::ABANDONED);
@@ -203,11 +195,6 @@ fn number(text: &str) -> Result<usize, String> {
     text.parse().map_err(|_| format!("not a number: {text}"))
 }
 
-/// Probes are `question<TAB>path[<TAB>anchor]`. A file rank is the place of the
-/// expected path among the distinct files answered; with an anchor, a span rank
-/// is the place of the first answered chunk whose own lines contain it -- what
-/// says whether the agent was handed the lines, not just the right file.
-/// `--hits 8` scores only the answers an agent actually receives.
 fn eval(
     root: &Path,
     model: Option<&Path>,
@@ -249,7 +236,6 @@ fn eval(
                 .filter(|anchor| !anchor.is_empty());
             let asked = Instant::now();
             let mut hits = search(&index, question, &options);
-            // What the agent is shown when the documentation answers better.
             if let Some((documented, _)) = omega::search::documented(&index, question, &options, &hits) {
                 hits = documented;
             }

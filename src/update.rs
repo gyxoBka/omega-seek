@@ -1,23 +1,10 @@
-//! `omega update`: the installed binary brought to the latest release.
-//!
-//! A release carries, beside its archives, the bare binary of each platform
-//! and its SHA-256, so an update is one small download and a check, with no
-//! archive to unpack. The running binary cannot be overwritten on Windows but
-//! can be renamed, so the new one takes its place and the old steps aside;
-//! on Unix the new one is renamed over it. The new binary is then run to
-//! write again the integrations already installed into agents -- the new
-//! binary, since the texts are compiled in, and only what is installed, so
-//! no agent gains an integration it was never given.
-
 use sha2::{Digest, Sha256};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 const REPOSITORY: &str = "gyxoBka/omega-seek";
-/// A binary is a few megabytes; this is a bound, not a size.
 const MAX_BYTES: u64 = 64 << 20;
 
-/// The release asset built for this machine, if the release builds one.
 fn asset() -> Option<&'static str> {
     Some(match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => "omega-x86_64-pc-windows-msvc.exe",
@@ -27,8 +14,6 @@ fn asset() -> Option<&'static str> {
     })
 }
 
-/// The tag of the latest release, read off where GitHub redirects
-/// `releases/latest` to: no API, no token, no rate limit to speak of.
 fn latest_tag(repository: &str) -> Result<String, String> {
     let url = format!("https://github.com/{repository}/releases/latest");
     let agent = ureq::Agent::config_builder().max_redirects(0).build().new_agent();
@@ -36,23 +21,19 @@ fn latest_tag(repository: &str) -> Result<String, String> {
     let location = match response {
         Ok(response) => response.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_owned),
         Err(ureq::Error::StatusCode(code)) if (300..400).contains(&code) => None,
-        // GitHub answers 404 for a repository the caller may not see.
         Err(ureq::Error::StatusCode(404)) => {
             return Err(format!("{url}: not found -- no release yet, or a private repository, which needs the installer script and the GitHub CLI"));
         }
         Err(error) => return Err(format!("{url}: {error}")),
     };
-    // ureq 3 hands a redirect back as a response when told not to follow it.
     let location = location.ok_or_else(|| format!("{url}: no release yet"))?;
     tag_of(&location).ok_or_else(|| format!("{url}: redirected to {location}, which names no release"))
 }
 
-/// `v0.1.8` from `.../releases/tag/v0.1.8`.
 fn tag_of(location: &str) -> Option<String> {
     location.rsplit_once("/tag/").map(|(_, tag)| tag.trim_end_matches('/').to_owned())
 }
 
-/// Whether `latest` is newer than what is running: tags are `vMAJOR.MINOR.PATCH`.
 fn newer(latest: &str, running: &str) -> bool {
     let parse = |text: &str| -> Option<Vec<u64>> {
         text.trim_start_matches('v').split('.').map(|part| part.parse().ok()).collect()
@@ -80,8 +61,6 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The new binary in place of the one at `exe`, which may be running, and
-/// the old one out of the way. Public for the test that rehearses it.
 pub fn replace(exe: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = exe.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let fresh = exe.with_file_name(format!("{name}.new"));
@@ -98,15 +77,11 @@ fn swap(exe: &Path, fresh: &Path, _name: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(fresh, std::fs::Permissions::from_mode(0o755))
         .map_err(|error| format!("{}: {error}", fresh.display()))?;
-    // Renamed over: a running process keeps the inode it opened.
     std::fs::rename(fresh, exe).map_err(|error| format!("{}: {error}", exe.display()))
 }
 
 #[cfg(windows)]
 fn swap(exe: &Path, fresh: &Path, name: &str) -> Result<(), String> {
-    // A running binary can be renamed but not overwritten or deleted; it
-    // steps aside under a name of its own, since the one from the last
-    // update may still be held by a session running since then.
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs())
@@ -117,7 +92,6 @@ fn swap(exe: &Path, fresh: &Path, name: &str) -> Result<(), String> {
         let _ = std::fs::rename(&aside, exe);
         return Err(format!("{}: {error}", exe.display()));
     }
-    // Whatever no process holds any more goes now; the rest at a later update.
     if let Some(dir) = exe.parent() {
         let prefix = format!("{name}.old");
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -131,8 +105,6 @@ fn swap(exe: &Path, fresh: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Check for a newer release and, unless `check_only`, install it and write
-/// the installed integrations again.
 pub fn run(check_only: bool) -> Result<(), String> {
     let repository = std::env::var("OMEGA_REPO").unwrap_or_else(|_| REPOSITORY.to_owned());
     let running = env!("CARGO_PKG_VERSION");
@@ -169,11 +141,6 @@ pub fn run(check_only: bool) -> Result<(), String> {
     println!("installed {latest} at {}", exe.display());
     crate::daemon::retire_idle();
 
-    // The instructions and the sub-agent text may have changed with the
-    // release, and they are compiled into the binary: the new one writes
-    // them, and only where something of ours is already installed. This
-    // process, on Linux, no longer even knows its own path -- /proc/self/exe
-    // points at the replaced inode.
     let status = std::process::Command::new(&exe)
         .args(["install", "--yes", "--refresh"])
         .status()

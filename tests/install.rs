@@ -1,5 +1,3 @@
-//! Install puts in an entry, a block and a file; uninstall takes out exactly those.
-
 use omega::install::agents::{Dirs, agents};
 use omega::install::config::Action;
 use omega::install::{Integration, Mode, apply};
@@ -42,7 +40,6 @@ fn claude_round_trip_leaves_what_was_there() {
     assert_eq!(written["mcpServers"]["omega"]["command"], EXE);
     assert_eq!(written["mcpServers"]["omega"]["args"][0], "mcp");
     assert_eq!(written["mcpServers"]["other"]["command"], "x");
-    // Key order survives: nothing is shuffled in somebody else's file.
     let keys: Vec<&String> = written.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["numStartups", "mcpServers", "theme"]);
     let md = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
@@ -52,7 +49,6 @@ fn claude_round_trip_leaves_what_was_there() {
     assert!(home.join(".claude/agents/omega.md").exists());
     assert!(home.join(".claude.json.omega.bak").exists());
 
-    // Again: nothing to do.
     for integration in Integration::ALL {
         assert_eq!(
             apply(Mode::Install, claude, integration, Path::new(EXE)),
@@ -164,7 +160,6 @@ fn a_fresh_home_gets_new_files_and_loses_them_again() {
         !path.exists(),
         "a config install created holds nothing else, so it is gone"
     );
-    // The instructions file held nothing but our block, so it is gone.
     assert!(!opencode.instructions.as_ref().unwrap().exists());
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -211,9 +206,6 @@ fn opencode_reinstall_replaces_scalar_tools_with_boolean_whitelist() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Counting what install writes, not just reading its verdict: running it
-/// again -- from the same place or after the binary moved -- leaves one entry,
-/// one block and one table, never two.
 #[test]
 fn installing_again_never_writes_anything_twice() {
     let home = scratch("twice");
@@ -265,7 +257,6 @@ fn installing_again_never_writes_anything_twice() {
         "a second and third install changed nothing"
     );
 
-    // The binary moved: every reference follows it, and there is still one of each.
     let moved = r"D:\Elsewhere\omega.exe";
     install(moved);
     let after = snapshot(&home);
@@ -295,8 +286,6 @@ fn installing_again_never_writes_anything_twice() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The block an agent reads on every session: it has to stay short, say when to
-/// use which tool and when grep, say why (no junk in the answers), and show calls.
 #[test]
 fn the_instructions_are_short_and_say_what_they_must() {
     let home = scratch("wording");
@@ -333,8 +322,6 @@ fn the_instructions_are_short_and_say_what_they_must() {
             "the instructions no longer say `{needed}`"
         );
     }
-    // The agent calls MCP tools and a shell finds the command on PATH: where
-    // the binary lives is the MCP entry's business, not a cost of every session.
     assert!(
         !block.contains(EXE) && !block.contains("{exe}"),
         "the instructions name a path"
@@ -342,8 +329,6 @@ fn the_instructions_are_short_and_say_what_they_must() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Another tool's installer leaves `{"mcpServers": {}}` in directories it made
-/// for agents nobody installed; that is not an agent to offer by default.
 #[test]
 fn a_real_config_or_a_filled_in_stub_is_an_installed_agent() {
     let home = scratch("stubs");
@@ -366,7 +351,6 @@ fn a_real_config_or_a_filled_in_stub_is_an_installed_agent() {
     );
     let all = agents(&Dirs::under(&home));
     let detected = |id: &str| all.iter().find(|agent| agent.id == id).unwrap().detected();
-    // A real config, or a stub that somebody has since filled in, counts.
     assert!(detected("codex"));
     assert!(detected("cursor"));
     let _ = std::fs::remove_dir_all(&home);
@@ -386,7 +370,6 @@ fn hollow_directories_are_told_from_lived_in_ones() {
             !kiro.detected(),
             "a directory of empty stubs was taken for an installed agent"
         );
-        // Once it holds anything real, it is one.
         put(&home.join(".kiro/steering/notes.md"), "# mine\n");
         assert!(kiro.detected());
     }
@@ -412,7 +395,6 @@ fn a_refresh_knows_what_is_installed_and_touches_only_that() {
     let all = agents(&Dirs::under(&home));
     let claude = all.iter().find(|agent| agent.id == "claude").unwrap();
 
-    // Another server's entry and a person's notes are not ours.
     for integration in Integration::ALL {
         assert!(!installed(claude, integration), "{integration:?} before install");
     }

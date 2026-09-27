@@ -1,5 +1,3 @@
-//! An index follows the tree it was built from.
-
 use omega::index::Index;
 use omega::search::{Options, search};
 use std::path::PathBuf;
@@ -37,7 +35,6 @@ fn added_changed_and_removed_files_are_followed() {
     );
     assert_eq!(first_path(&index, "render_receipt"), None);
 
-    // Added.
     std::fs::write(
         root.join("beta.rs"),
         "fn render_receipt() {\n    todo!()\n}\n",
@@ -53,7 +50,6 @@ fn added_changed_and_removed_files_are_followed() {
         Some("alpha.rs")
     );
 
-    // Changed: a different size, so the stamp differs whatever the clock says.
     std::fs::write(
         root.join("alpha.rs"),
         "fn settle_ledger_balance() {\n    todo!()\n}\n",
@@ -66,7 +62,6 @@ fn added_changed_and_removed_files_are_followed() {
     );
     assert_eq!(first_path(&index, "parse_invoice"), None);
 
-    // Removed.
     std::fs::remove_file(root.join("beta.rs")).unwrap();
     let index = index.refreshed();
     assert_eq!(first_path(&index, "render_receipt"), None);
@@ -79,7 +74,6 @@ fn added_changed_and_removed_files_are_followed() {
 fn an_untouched_tree_with_a_skipped_file_is_not_rebuilt() {
     let root = scratch("skipped");
     std::fs::write(root.join("alpha.rs"), "fn parse_invoice() {}\n").unwrap();
-    // One enormous line: minified, so looked at and left out.
     std::fs::write(
         root.join("bundle.js"),
         format!("var a={};\n", "1+".repeat(4000)),
@@ -118,7 +112,6 @@ fn a_kept_cache_is_followed_and_a_broken_one_ignored() {
     assert_eq!(stored.len(), 1);
     drop(index);
 
-    // A second start answers the same from the cache, and sees what changed since.
     std::fs::write(
         root.join("beta.rs"),
         "fn render_receipt() {
@@ -136,10 +129,8 @@ fn a_kept_cache_is_followed_and_a_broken_one_ignored() {
         first_path(&index, "render_receipt").as_deref(),
         Some("beta.rs")
     );
-    // Nothing of omega's overwrites a store in place; here it is, once unmapped.
     drop(index);
 
-    // A cache that is not one is a slower start, not a failure.
     std::fs::write(stored[0].path(), b"not a cache").unwrap();
     let index = Index::open_in(&root, None, Some(&cache)).unwrap();
     assert_eq!(
@@ -178,7 +169,6 @@ fn an_outline_lists_declarations_and_a_directory_lists_files() {
         file.contains("    11  export function makeSession()"),
         "{file}"
     );
-    // `if (bad) {` opens a block and declares nothing.
     assert!(!file.contains("     5"), "{file}");
 
     let directory = omega::outline::outline(&index, "src");
@@ -213,7 +203,6 @@ fn a_regular_expression_and_a_quoted_name_are_found_in_first_party_files_only() 
     assert!(!matched.contains("node_modules"), "{matched}");
     assert!(omega::usages::grep(&index, "(", &options).contains("not a regular expression"));
 
-    // An operation's name is the text the code writes, not every `stop`.
     let named = omega::usages::usages(&index, "cart.stop", &options);
     assert!(named.contains("`cart.stop`: 1 line") && named.contains("Found as text"), "{named}");
     let method = omega::usages::usages(&index, "cart.missing", &options);
@@ -261,7 +250,6 @@ fn nothing_under_a_path_is_not_nothing_anywhere() {
     let answer = omega::search::render(&index, "ValidateToken", &hits, &options);
     assert!(answer.contains("No matches under `web`") && answer.contains("api/token.go"), "{answer}");
 
-    // A name nothing bears is said to be missing, without guesses that share one word with it.
     let hits = search(&index, "ClearToken", &Options::default());
     let answer = omega::search::render(&index, "ClearToken", &hits, &Options::default());
     assert!(answer.contains("Nothing in the code is named `ClearToken`") && !answer.contains("token.go"), "{answer}");
@@ -287,14 +275,12 @@ fn a_document_is_outlined_by_its_headings_and_found_by_them() {
     let listing = omega::outline::outline(&index, "docs");
     assert!(listing.contains("T07-cart-limits.md") && listing.contains("T07 — Cart limits and quotas") && !listing.contains("Done when"), "{listing}");
 
-    // The code mentions the words; the document has a section by that name.
     let options = Options::default();
     for query in ["method and limits", "T07"] {
         let hits = search(&index, query, &options);
         let answer = omega::search::render(&index, query, &hits, &options);
         assert!(answer.contains("A document has a section by that name") && answer.contains("T07-cart-limits.md"), "{query}: {answer}");
     }
-    // A phrase written in a document is found as text.
     let found = omega::usages::usages(&index, "at most forty lines", &omega::usages::Options::default());
     assert!(found.contains("T07-cart-limits.md"), "{found}");
 
@@ -312,7 +298,6 @@ fn a_store_grows_by_segments_and_is_merged_into_one() {
         bytes.windows(8).filter(|window| window == b"OMEGAIDX").count()
     };
     let names = ["parse_invoice", "render_receipt", "settle_ledger", "audit_trail"];
-    // Each start after a change appends a segment of what changed.
     for (round, name) in names.iter().enumerate() {
         std::fs::write(root.join(format!("f{round}.rs")), format!("fn handler_{round}() {{\n    todo!()\n}}\n")).unwrap();
         std::fs::write(root.join("moving.rs"), format!("fn {name}() {{\n    todo!()\n}}\n")).unwrap();
@@ -322,7 +307,6 @@ fn a_store_grows_by_segments_and_is_merged_into_one() {
     }
     assert_eq!(records(), 4);
 
-    // Merged: one segment, the dead entries of `moving.rs` gone, answers the same.
     let (index, upkeep) = Index::open_lexical_in(&root, None, Some(&cache), &|_| {}).unwrap();
     upkeep.tidy().run(&|_| {}).unwrap();
     drop(index);
@@ -338,7 +322,6 @@ fn a_store_grows_by_segments_and_is_merged_into_one() {
     let _ = std::fs::remove_dir_all(&cache);
 }
 
-/// What an index holds, as paths and lines, to compare two indexes by.
 fn tables(index: &Index) -> Vec<(String, u32, u32, Vec<String>)> {
     index
         .chunks
@@ -360,25 +343,21 @@ fn an_index_kept_up_to_date_holds_what_one_built_afresh_does() {
     }
     let mut index = Index::open_in(&root, None, Some(&cache)).unwrap();
     let rounds: [&dyn Fn(&std::path::Path); 5] = [
-        // Changed, added between existing paths, removed.
         &|root| {
             std::fs::write(root.join("m005.rs"), source("changed_five")).unwrap();
             std::fs::write(root.join("m005a.rs"), source("added_between")).unwrap();
             std::fs::remove_file(root.join("m010.rs")).unwrap();
         },
-        // A file of the delta changed again, and one removed.
         &|root| {
             std::fs::write(root.join("m005.rs"), source("changed_five_again")).unwrap();
             std::fs::remove_file(root.join("m005a.rs")).unwrap();
             std::fs::write(root.join("a_first.rs"), source("added_first")).unwrap();
         },
-        // Enough files read again that the delta is written to the store.
         &|root| {
             for at in 0..300 {
                 std::fs::write(root.join(format!("z{at:03}.rs")), source(&format!("bulk_{at}"))).unwrap();
             }
         },
-        // After it was written: changed, and removed from the written delta.
         &|root| {
             std::fs::write(root.join("z100.rs"), source("bulk_changed")).unwrap();
             std::fs::remove_file(root.join("z200.rs")).unwrap();
@@ -395,7 +374,6 @@ fn an_index_kept_up_to_date_holds_what_one_built_afresh_does() {
             assert_eq!(first_path(&index, query), first_path(&afresh, query), "{query}");
         }
     }
-    // And a start from the store holds the same.
     index.persist();
     drop(index);
     let reopened = Index::open_in(&root, None, Some(&cache)).unwrap();

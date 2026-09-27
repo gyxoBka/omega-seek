@@ -1,20 +1,9 @@
-//! The MCP face: `search`, `usages`, `grep` and `outline` over stdio, line-delimited JSON-RPC.
-//!
-//! The server is started in one repository and answers about it unless a call
-//! says otherwise. What keeps an agent from being answered about the wrong
-//! code is that it is always told where an answer came from when that could be
-//! in doubt: at connection (`instructions`), when the repository has worktrees
-//! the agent might be in, and whenever a call looked somewhere else.
-
 use crate::daemon::{self, Link};
 use crate::engine::{self, Engine};
 use crate::roots;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::Path;
-
-// Every session pays for these words before it asks anything: each says what
-// the tool is for, what it replaces and what comes back, once.
 
 const DESCRIPTION: &str = "Find code in this repository by what it does or what it is called. Use \
 INSTEAD of grep/glob/find to locate where something is implemented, defined or handled. Answers \
@@ -42,8 +31,6 @@ line and signature, nesting kept) or of a directory (its files with what each de
 subdirectories). Call BEFORE reading a file you have not seen: a few dozen lines instead of the \
 whole file, and the line to start reading from.";
 
-/// Said in full once, where an agent's first call usually goes, and at
-/// connection (`instructions`); the other tools only recall it.
 const ROOT_DESCRIPTION: &str = "Look in this directory instead of omega's repository: the git \
 worktree you work in, or a directory the user gave this repository access to (`../backend`, a \
 parent of several `..`). Absolute, or relative to omega's repository. Omit only when you work in \
@@ -142,9 +129,6 @@ impl Answerer {
     }
 }
 
-/// What the agent is told once, at connection: which directory a call without
-/// a `root` is about. It knows its own working directory; this is the other
-/// half of noticing that the two differ.
 fn instructions(home: &Path) -> String {
     format!(
         "omega is indexing {home}. Calls without `root` search this directory only. If your working \

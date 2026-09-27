@@ -1,17 +1,9 @@
-//! The coding agents omega can be installed into, and where each keeps
-//! its MCP servers, its standing instructions and its sub-agents.
-
 use std::path::{Path, PathBuf};
 
-/// The directories agent configuration hangs off. `OMEGA_HOME` replaces
-/// all of them, so an install can be rehearsed without touching a real one.
 #[derive(Clone, Debug)]
 pub struct Dirs {
     pub home: PathBuf,
-    /// `%APPDATA%` on Windows, `~/Library/Application Support` on macOS,
-    /// `$XDG_CONFIG_HOME` or `~/.config` elsewhere.
     pub app_config: PathBuf,
-    /// `$XDG_CONFIG_HOME` or `~/.config`, on every platform.
     pub xdg_config: PathBuf,
 }
 
@@ -50,26 +42,18 @@ impl Dirs {
     }
 }
 
-/// How an agent spells a stdio MCP server in its config.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpShape {
-    /// `{"type": "stdio", "command": ..., "args": [...]}`
     Stdio,
-    /// `{"command": ..., "args": [...]}`
     Bare,
-    /// opencode: `{"type": "local", "command": [...], "enabled": true}`
     Opencode,
-    /// Codex: a `[mcp_servers.<name>]` table in TOML.
     CodexToml,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SubagentShape {
-    /// Markdown with `name` / `description` / `tools` front matter.
     Markdown,
-    /// OpenCode Markdown with a boolean tools map.
     OpenCodeMarkdown,
-    /// Codex: TOML with `developer_instructions`.
     CodexToml,
 }
 
@@ -77,11 +61,8 @@ pub enum SubagentShape {
 pub struct Agent {
     pub id: &'static str,
     pub name: &'static str,
-    /// On `PATH` means installed.
     pub binary: Option<&'static str>,
-    /// Exists means installed.
     pub config_dir: Option<PathBuf>,
-    /// File, dotted section path inside it, and the entry's shape.
     pub mcp: Option<(PathBuf, &'static str, McpShape)>,
     pub instructions: Option<PathBuf>,
     pub subagent: Option<(PathBuf, SubagentShape)>,
@@ -94,10 +75,6 @@ impl Agent {
     }
 }
 
-/// Whether a config directory belongs to an agent somebody uses. Installers of
-/// other tools register themselves with every agent they know of and leave
-/// `{"mcpServers": {}}` behind in directories they created; a directory that
-/// holds nothing but such hollow stubs is not an installed agent.
 fn is_lived_in(dir: &Path) -> bool {
     const MAX_DEPTH: usize = 3;
     fn any_real_file(dir: &Path, depth: usize) -> bool {
@@ -136,7 +113,6 @@ fn on_path(binary: &str) -> bool {
     })
 }
 
-/// opencode reads `opencode.jsonc` or `opencode.json`; whichever exists wins.
 fn opencode_config(dirs: &Dirs) -> PathBuf {
     let base = dirs.xdg_config.join("opencode");
     let json = base.join("opencode.json");
@@ -224,7 +200,6 @@ pub fn agents(dirs: &Dirs) -> Vec<Agent> {
             binary: Some("cursor"),
             config_dir: Some(home.join(".cursor")),
             mcp: Some((home.join(".cursor/mcp.json"), "mcpServers", Stdio)),
-            // Cursor's instructions are project-local .mdc files.
             instructions: None,
             subagent: markdown(home.join(".cursor/agents/omega.md")),
         },

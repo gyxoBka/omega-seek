@@ -1,20 +1,10 @@
-//! Cutting a file into chunks along the boundaries its own layout shows.
-//!
-//! No grammar is involved. In every language worth indexing a declaration
-//! starts at the shallowest indentation of its surroundings, after a blank line
-//! or after the line that closed the previous one; that is enough to keep a
-//! function, its doc comment and its attributes in one piece.
-
-/// A run of lines, zero-based, end exclusive.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
 }
 
-/// Units shorter than this are joined with their neighbours.
 const MIN_LINES: usize = 12;
-/// Units longer than this are cut again one level deeper.
 const MAX_LINES: usize = 80;
 const WINDOW: usize = 60;
 const WINDOW_STRIDE: usize = 50;
@@ -65,7 +55,6 @@ fn split(info: &[Line], lo: usize, hi: usize, depth: usize, out: &mut Vec<Span>)
             if let Some(span) = pending.take() {
                 out.push(span);
             }
-            // The opening line stays with the first piece of what it opens.
             let before = out.len();
             split(info, unit.start + 1, unit.end, depth + 1, out);
             match out.get_mut(before) {
@@ -88,8 +77,6 @@ fn split(info: &[Line], lo: usize, hi: usize, depth: usize, out: &mut Vec<Span>)
             pending = Some(joined);
         }
     }
-    // A few trailing lines are not worth a chunk of their own: alone they are
-    // short enough for length normalisation to rank them above real answers.
     if let Some(span) = pending {
         match out.last_mut() {
             Some(last)
@@ -104,7 +91,6 @@ fn split(info: &[Line], lo: usize, hi: usize, depth: usize, out: &mut Vec<Span>)
     }
 }
 
-/// The range cut at every line that starts something at its shallowest level.
 fn units(info: &[Line], lo: usize, hi: usize) -> Vec<Span> {
     let base = info[lo..hi]
         .iter()

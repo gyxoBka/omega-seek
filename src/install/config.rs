@@ -1,6 +1,3 @@
-//! Editing other programs' configuration: add one entry, take one entry out,
-//! leave everything else as it was.
-
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -14,14 +11,10 @@ pub enum Action {
     Unchanged,
     Removed,
     NotFound,
-    /// Left alone, and why; the caller says what to add by hand.
     Skipped(String),
     Failed(String),
 }
 
-/// Set `section.key = value` in a JSON file, creating the file and the section
-/// as needed. Key order is kept. A file that is not plain JSON -- comments,
-/// trailing commas -- is left alone rather than rewritten without them.
 pub fn merge_json(path: &Path, section: &str, key: &str, value: &Value) -> Action {
     let existed = path.exists();
     let text = if existed {
@@ -69,7 +62,6 @@ pub fn remove_json(path: &Path, section: &str, key: &str) -> Action {
         return Action::NotFound;
     };
     let Ok(mut root) = serde_json::from_str::<Value>(&text) else {
-        // Never written by us, then: merge refuses the same file.
         return if text.contains(&format!("\"{key}\"")) {
             Action::Skipped("not plain JSON (comments?)".into())
         } else {
@@ -89,7 +81,6 @@ pub fn remove_json(path: &Path, section: &str, key: &str) -> Action {
     if removed.is_none() {
         return Action::NotFound;
     }
-    // A file that now holds nothing but empty sections is one install made.
     let result = if is_hollow(&root) {
         std::fs::remove_file(path).map_err(|error| error.to_string())
     } else {
@@ -119,7 +110,6 @@ fn pretty(root: &Value) -> String {
     text
 }
 
-/// Replace the marked block in a Markdown file, or append it.
 pub fn merge_block(path: &Path, block: &str) -> Action {
     let existed = path.exists();
     let existing = std::fs::read_to_string(path).unwrap_or_default();
@@ -143,7 +133,6 @@ pub fn merge_block(path: &Path, block: &str) -> Action {
     }
 }
 
-/// Take the marked block out; a file that held nothing else is removed.
 pub fn remove_block(path: &Path) -> Action {
     let Ok(existing) = std::fs::read_to_string(path) else {
         return Action::NotFound;
@@ -176,8 +165,6 @@ fn bounds(text: &str) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
-/// Add or refresh a `[header]` table at the end of a TOML file, as text: the
-/// rest of the file, comments included, is not parsed and not touched.
 pub fn merge_toml_table(path: &Path, header: &str, table: &str) -> Action {
     let existed = path.exists();
     let existing = std::fs::read_to_string(path).unwrap_or_default();
@@ -219,7 +206,6 @@ pub fn remove_toml_table(path: &Path, header: &str) -> Action {
     }
 }
 
-/// The text without the `[header]` table and its sub-tables.
 fn without_toml_table(text: &str, header: &str) -> String {
     let mut kept = String::new();
     let mut skipping = false;
@@ -258,9 +244,6 @@ pub fn remove_file(path: &Path) -> Action {
     }
 }
 
-/// Written aside and renamed into place, so a crash leaves the old file or the
-/// new one. A config that already existed is copied to `<name>.omega.bak`
-/// first when asked: it is somebody else's file.
 fn write(path: &Path, content: &str, backup: bool) -> Result<(), String> {
     let describe = |error: std::io::Error| format!("{}: {error}", path.display());
     if let Some(parent) = path.parent() {

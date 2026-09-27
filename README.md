@@ -35,7 +35,7 @@ never reach the index, so they never reach an answer.
 | pick up an edited file | 25 ms on 2,200 files, automatically, before the next query |
 | query | about 1 ms |
 | answer | 350-600 tokens |
-| binary | 8 MB, no daemon, no database, CPU only |
+| binary | 8 MB, no database, CPU only; the daemon starts and stops by itself |
 
 ## Quality
 
@@ -141,6 +141,22 @@ paths whenever a call looked elsewhere, and -- when the repository has git
 worktrees an agent might be working in -- says so at the top of the answer.
 Nothing is remembered between calls, so agents sharing one server cannot
 redirect each other.
+
+## One daemon for every session
+
+Every agent starts its own `omega mcp`, and several agents in one large
+repository would each hold its index. So the first session starts a daemon, one
+per user, and every session after it asks that daemon: one index per
+repository, however many agents, and a second session starts with its index
+warm. Each session says which directory it was started in, so an agent in a
+worktree is answered from the worktree. It goes after half an hour with no
+session; if it dies, the next call starts it again. Nothing needs setting up:
+
+```sh
+omega daemon status     # what it holds, for how many sessions
+omega daemon stop       # stop it now; the next session starts it again
+omega daemon disable    # every session answers from its own process, as before
+```
 
 ## Keeping things out of the index
 

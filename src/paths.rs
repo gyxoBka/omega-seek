@@ -53,6 +53,19 @@ pub fn stores() -> Option<PathBuf> {
     Some(cache()?.join("omega").join("index"))
 }
 
+#[must_use]
+pub fn state() -> Option<PathBuf> {
+    Some(cache()?.join("omega"))
+}
+
+#[must_use]
+pub fn sockets() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    env("XDG_RUNTIME_DIR").map(|dir| dir.join("omega")).or_else(state)
+}
+
 /// omega's settings: the access each repository has been given.
 #[must_use]
 pub fn settings() -> Option<PathBuf> {

@@ -183,6 +183,36 @@ worktrees (read from `.git/worktrees`) names them. Calls are stateless:
 sub-agents can share one server process, and one in a worktree must not
 redirect the others.
 
+## One daemon for every session
+
+An `omega mcp` per agent means an index per agent: the postings and vectors are
+shared anyway, a mapping of one file, but the tables of files and chunks, the
+watcher and the deltas are each session's own, and five agents in a large
+repository hold five of them. A daemon holds them once. It was long left out
+for one reason: a server per repository cannot tell which checkout an agent
+works in, and would answer an agent in a worktree from the main checkout.
+`omega mcp` stays what the agent starts, in the agent's directory, and becomes
+a proxy: it answers `initialize` and `tools/list` itself and sends every call
+to the daemon with its own home, so the daemon always knows whose call it is;
+roots, access and headings are worked out from that home, per call.
+
+One daemon runs per user, model and data directory, on a named pipe on Windows
+and a socket in a directory only the user can enter elsewhere (an abstract
+socket on Linux could be reached by any user). The first session starts it,
+detached, out of the agent's job and without the agent's pipes: a daemon that
+kept the session's standard handles would keep the agent waiting for an end of
+output that never comes. Sessions are counted by the hello each sends; with none
+for half an hour the daemon writes what it read again and leaves. A proxy that
+loses it starts it again and asks once more, and one that cannot answers from
+its own process for the rest of the session, as it does when the daemon is
+disabled (`omega daemon disable`, or `OMEGA_NO_DAEMON=1`). `omega daemon stop`
+returns once the deltas are on disk; a daemon that does not answer within ten
+seconds is killed by the pid it recorded. After `omega update` the old
+version's daemon is stopped if no session uses it, and otherwise goes when they
+end. Through the daemon a query costs what it did in a process of its own, and
+a second session's first call is answered in ~15 ms instead of waiting for an
+index.
+
 ## Installing into agents
 
 `omega install` offers three independent integrations per agent: the MCP

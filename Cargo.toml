@@ -29,6 +29,7 @@ sha2 = "0.10"
 ureq = "3"
 model2vec-rs = { version = "0.2.1", default-features = false, features = ["onig", "local-only"] }
 notify = "8"
+interprocess = "2"
 
 [lints.rust]
 unsafe_code = "deny"

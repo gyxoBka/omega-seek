@@ -63,6 +63,15 @@ impl Access {
     }
 
     #[must_use]
+    pub fn daemon(&self) -> bool {
+        self.settings.get("daemon").and_then(Value::as_bool).unwrap_or(true)
+    }
+
+    pub fn set_daemon(&mut self, enabled: bool) {
+        self.settings.insert("daemon".to_owned(), Value::Bool(enabled));
+    }
+
+    #[must_use]
     pub fn file(&self) -> Option<&Path> {
         self.file.as_deref()
     }

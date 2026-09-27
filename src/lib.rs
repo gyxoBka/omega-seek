@@ -7,6 +7,8 @@
 
 pub mod access;
 pub mod chunk;
+pub mod daemon;
+pub mod engine;
 pub mod index;
 pub mod install;
 pub mod mcp;

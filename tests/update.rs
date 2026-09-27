@@ -22,6 +22,7 @@ fn a_running_binary_is_replaced_and_the_old_one_steps_aside() {
     let mut held = std::process::Command::new(&exe)
         .args(["mcp", "--no-model", "--root"])
         .arg(&dir)
+        .env("OMEGA_NO_DAEMON", "1")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

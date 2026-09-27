@@ -167,6 +167,7 @@ pub fn run(check_only: bool) -> Result<(), String> {
     let exe: PathBuf = std::env::current_exe().map_err(|error| error.to_string())?;
     replace(&exe, &bytes)?;
     println!("installed {latest} at {}", exe.display());
+    crate::daemon::retire_idle();
 
     // The instructions and the sub-agent text may have changed with the
     // release, and they are compiled into the binary: the new one writes

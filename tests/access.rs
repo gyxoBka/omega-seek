@@ -118,7 +118,7 @@ fn omega(ws: &Path) -> Command {
     ] {
         command.env(name, ws.join(dir));
     }
-    command.env("USERPROFILE", home_of(ws)).env("HOME", home_of(ws));
+    command.env("USERPROFILE", home_of(ws)).env("HOME", home_of(ws)).env("OMEGA_NO_DAEMON", "1");
     command
 }
 

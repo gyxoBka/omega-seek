@@ -12,6 +12,7 @@ omega eval <probes.tsv>... [--root DIR] [--limit N] [--hits N]
 omega index [--root DIR] [--prune]
 omega access [add <dir> | remove <dir> | list [--all] | forget <repo>]
 omega mcp [--root DIR]
+omega daemon [status | start | stop [--all] | restart | enable | disable]
 omega model install
 omega update [--check]
 omega install|uninstall [--agents claude,codex,...] [--integrations mcp,instructions,subagent] [--yes] [--dry-run] [--refresh]
@@ -144,6 +145,7 @@ fn run() -> Result<(), String> {
         "index" => index(&root, model.as_deref()),
         "access" => omega::access::run(&positional, all),
         "mcp" => omega::mcp::serve(&root, model.as_deref()),
+        "daemon" => omega::daemon::command(positional.first().map(String::as_str), all, model.as_deref()),
         _ => Err(USAGE.to_owned()),
     }
 }

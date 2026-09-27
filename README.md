@@ -30,8 +30,8 @@ never reach the index, so they never reach an answer.
 
 | | |
 |---|---|
-| index a 100k-line repository | 0.5 s cold, 0.2 s from cache |
-| pick up an edited file | 40 ms, automatically, before the next query |
+| index 27,000 files | 4 s to answer by words, 15 s with vectors; 0.2 s from the store |
+| pick up an edited file | 25 ms on 2,200 files, automatically, before the next query |
 | query | about 1 ms |
 | answer | 350-600 tokens |
 | binary | 7 MB, no daemon, no database, CPU only |
@@ -86,7 +86,9 @@ entry, a short block of instructions, and a sub-agent. Running it again changes
 nothing; `omega uninstall` restores every file byte for byte.
 
 **3. Restart the agent.** There is nothing to index by hand: the server indexes
-the repository it is started in and follows your edits.
+the repository it is started in and follows your edits. In a large repository
+-- tens of thousands of files -- `omega index` run there once beforehand spares
+the first session the wait; an interrupted index resumes where it stopped.
 
 From a terminal:
 
@@ -96,6 +98,7 @@ omega usages ValidateToken
 omega usages "connection refused"
 omega grep 'func \w+Handler\('
 omega outline src/auth
+omega index            # the whole index now, before a session needs it
 ```
 
 ## Other repositories and worktrees
@@ -127,8 +130,14 @@ files, `*.min.*`, source maps and files over 1 MB are always left out.
 
 ## Removing it
 
+```powershell
+# Windows
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.ps1))) -Uninstall -Purge
+```
+
 ```sh
-install.ps1 -Uninstall -Purge      # or: install.sh --uninstall --purge
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.sh | sh -s -- --uninstall --purge
 ```
 
 Takes omega out of the agents, then removes the binary, the PATH entry, the

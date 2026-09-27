@@ -70,20 +70,50 @@ literal text in documents too.
 
 ## Index and cache
 
-Built in memory at start. The disk is the only source of truth: before every
-answer the tree is walked again, in parallel and asking only source files for
-their size and time, so an answer is never older than the call -- whoever
-edited, an agent a moment ago or a person by hand. Files whose size and
-modification time are unchanged are not re-read. On 2,200 files (12,000 chunks)
-looking costs ~10 ms; picking up an edited file costs ~150 ms, of which reading
-and embedding that one file is the least: ~110 ms rebuilds the postings of the
-whole index from what is cached per file, ~30 ms saves the cache. A file
-watcher was not used: its events arrive after the write they report, can be
-dropped, and differ by platform, so the walk would have to stay as the
-guarantee anyway. What each file was read as is kept under the user cache directory
-(`%LOCALAPPDATA%\omega\index`, `$XDG_CACHE_HOME/omega/index`), one
-file per repository and model; a stale or unreadable cache is ignored and
-deleting the directory is always safe.
+The disk is the only source of truth: before every answer the tree is walked
+again, in parallel and asking only source files for their size and time, so an
+answer is never older than the call -- whoever edited, an agent a moment ago or
+a person by hand. Files whose size and modification time are unchanged are not
+re-read. A file watcher was not used: its events arrive after the write they
+report, can be dropped, and differ by platform, so the walk would have to stay
+as the guarantee anyway.
+
+What each file was read as is kept in a store under the user cache directory
+(`%LOCALAPPDATA%\omega\index`, `$XDG_CACHE_HOME/omega/index`), one file per
+repository and model. The store is a run of segments, each a whole index of
+some files: their chunks and names, a term dictionary with postings as varint
+gaps, and their vectors as one byte per dimension with a scale per row. It is
+mapped, not read: a start builds the tables every answer walks -- files, chunks,
+their names -- and leaves the postings and vectors where they lie. On 27,000
+files (215,000 chunks) a start that finds nothing changed costs ~0.2 s, against
+~2.5 s when every file's entry was decoded and the postings rebuilt from them,
+and the store is 135 MB against 467 MB: a term is written once per segment
+rather than once per chunk. Measured on four repositories, bytes for vectors
+changed no ranking.
+
+The store is only appended to, or replaced whole by a file written beside it
+and renamed over; never truncated or written in place, so a process that mapped
+it keeps reading what it mapped (on Windows the file is opened to allow that,
+as Unix does). A segment cut short by a crash is told by its missing trailer.
+Files read again during a session go into a delta held in memory, written to
+the store at the end of the session or once it holds 256 files; picking up an
+edited file costs ~25 ms on 2,200 files, query included: what changed is found
+by comparing the walk with the last one, and the tables are merged, what did
+not change moved into place rather than read out of the segments again. On
+26,000 files a query costs ~55 ms, of which the walk is ~40: the walk, not the
+index, is what grows with the tree. Entries of files read
+again are dead weight in older segments; past eight segments or a quarter of
+dead chunks, the live entries are merged into one segment. A stale or
+unreadable store is ignored and deleting the directory is always safe.
+
+A first index is written as it goes, a segment every 2,048 files, so one
+interrupted -- an agent closed, a machine asleep -- resumes where it stopped. It
+is done in two passes: the words first, a fifth of the work and all that
+`usages`, `grep` and `outline` need, then the vectors, segment by segment, each
+written as soon as it is done. The server answers once the words are read,
+searching by words alone meanwhile and saying so. On 27,000 files the words
+take ~4 s and the vectors ~11 s. `omega index` does the same ahead of a session
+and leaves the store merged into one segment.
 
 A file that is mostly assertions is treated as tests wherever it sits (Rust
 aside, whose tests live in the file they test).
@@ -100,7 +130,12 @@ takes. An absolute path in `path` implies its checkout the same way; a checkout
 nested under a hidden directory of the home repository (where harnesses put
 worktrees, and where the home walk never looks) stands apart. Up to four roots
 stay indexed, the home root always among them; a drive, a home directory or a
-tree of more than 60,000 source files is refused before it costs minutes.
+tree of more than 60,000 source files named as a root is refused before it
+costs minutes. The home root is never refused for its size: it is where the
+agent was started, a monorepo that large is still the code being worked on,
+and a server that exits at start shows only as "failed". It is indexed in the
+background from the start, so `initialize` is answered at once, and the first
+call waits for its words (see Index and cache).
 
 No harness tells an MCP server where its agent currently is -- roots are
 deprecated in the protocol, and hooks would tie this to one harness -- so the

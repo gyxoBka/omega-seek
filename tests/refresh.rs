@@ -116,6 +116,7 @@ fn a_kept_cache_is_followed_and_a_broken_one_ignored() {
     );
     let stored: Vec<_> = std::fs::read_dir(&cache).unwrap().flatten().collect();
     assert_eq!(stored.len(), 1);
+    drop(index);
 
     // A second start answers the same from the cache, and sees what changed since.
     std::fs::write(
@@ -135,6 +136,8 @@ fn a_kept_cache_is_followed_and_a_broken_one_ignored() {
         first_path(&index, "render_receipt").as_deref(),
         Some("beta.rs")
     );
+    // Nothing of omega's overwrites a store in place; here it is, once unmapped.
+    drop(index);
 
     // A cache that is not one is a slower start, not a failure.
     std::fs::write(stored[0].path(), b"not a cache").unwrap();
@@ -296,4 +299,109 @@ fn a_document_is_outlined_by_its_headings_and_found_by_them() {
     assert!(found.contains("T07-cart-limits.md"), "{found}");
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_store_grows_by_segments_and_is_merged_into_one() {
+    let root = scratch("segments");
+    let cache = scratch("segments-cache");
+    let records = || {
+        let stored: Vec<_> = std::fs::read_dir(&cache).unwrap().flatten().collect();
+        assert_eq!(stored.len(), 1, "one file per repository");
+        let bytes = std::fs::read(stored[0].path()).unwrap();
+        bytes.windows(8).filter(|window| window == b"OMEGAIDX").count()
+    };
+    let names = ["parse_invoice", "render_receipt", "settle_ledger", "audit_trail"];
+    // Each start after a change appends a segment of what changed.
+    for (round, name) in names.iter().enumerate() {
+        std::fs::write(root.join(format!("f{round}.rs")), format!("fn handler_{round}() {{\n    todo!()\n}}\n")).unwrap();
+        std::fs::write(root.join("moving.rs"), format!("fn {name}() {{\n    todo!()\n}}\n")).unwrap();
+        let (index, _) = Index::open_lexical_in(&root, None, Some(&cache), &|_| {}).unwrap();
+        assert_eq!(first_path(&index, name).as_deref(), Some("moving.rs"));
+        assert_eq!(index.files.len(), round + 2);
+    }
+    assert_eq!(records(), 4);
+
+    // Merged: one segment, the dead entries of `moving.rs` gone, answers the same.
+    let (index, upkeep) = Index::open_lexical_in(&root, None, Some(&cache), &|_| {}).unwrap();
+    upkeep.tidy().run(&|_| {}).unwrap();
+    drop(index);
+    assert_eq!(records(), 1);
+    let (index, upkeep) = Index::open_lexical_in(&root, None, Some(&cache), &|_| {}).unwrap();
+    assert!(upkeep.is_idle());
+    assert_eq!(first_path(&index, "handler_0").as_deref(), Some("f0.rs"));
+    assert_eq!(first_path(&index, "audit_trail").as_deref(), Some("moving.rs"));
+    assert_eq!(first_path(&index, "render_receipt"), None);
+
+    drop(index);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+/// What an index holds, as paths and lines, to compare two indexes by.
+fn tables(index: &Index) -> Vec<(String, u32, u32, Vec<String>)> {
+    index
+        .chunks
+        .iter()
+        .map(|chunk| {
+            let path = index.files[chunk.file as usize].path.clone();
+            (path, chunk.start_line, chunk.end_line, chunk.names.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn an_index_kept_up_to_date_holds_what_one_built_afresh_does() {
+    let root = scratch("merged-tables");
+    let cache = scratch("merged-tables-cache");
+    let source = |name: &str| format!("fn {name}() {{\n    todo!()\n}}\n\nfn {name}_helper() {{\n    todo!()\n}}\n");
+    for at in 0..40 {
+        std::fs::write(root.join(format!("m{at:03}.rs")), source(&format!("start_{at}"))).unwrap();
+    }
+    let mut index = Index::open_in(&root, None, Some(&cache)).unwrap();
+    let rounds: [&dyn Fn(&std::path::Path); 5] = [
+        // Changed, added between existing paths, removed.
+        &|root| {
+            std::fs::write(root.join("m005.rs"), source("changed_five")).unwrap();
+            std::fs::write(root.join("m005a.rs"), source("added_between")).unwrap();
+            std::fs::remove_file(root.join("m010.rs")).unwrap();
+        },
+        // A file of the delta changed again, and one removed.
+        &|root| {
+            std::fs::write(root.join("m005.rs"), source("changed_five_again")).unwrap();
+            std::fs::remove_file(root.join("m005a.rs")).unwrap();
+            std::fs::write(root.join("a_first.rs"), source("added_first")).unwrap();
+        },
+        // Enough files read again that the delta is written to the store.
+        &|root| {
+            for at in 0..300 {
+                std::fs::write(root.join(format!("z{at:03}.rs")), source(&format!("bulk_{at}"))).unwrap();
+            }
+        },
+        // After it was written: changed, and removed from the written delta.
+        &|root| {
+            std::fs::write(root.join("z100.rs"), source("bulk_changed")).unwrap();
+            std::fs::remove_file(root.join("z200.rs")).unwrap();
+            std::fs::write(root.join("m020.rs"), "").unwrap();
+        },
+        &|root| std::fs::remove_file(root.join("m020.rs")).unwrap(),
+    ];
+    for round in rounds {
+        round(&root);
+        index = index.refreshed();
+        let afresh = Index::build(&root, None).unwrap();
+        assert_eq!(tables(&index), tables(&afresh));
+        for query in ["changed_five_again", "added_first", "bulk_changed", "bulk_7", "start_3"] {
+            assert_eq!(first_path(&index, query), first_path(&afresh, query), "{query}");
+        }
+    }
+    // And a start from the store holds the same.
+    index.persist();
+    drop(index);
+    let reopened = Index::open_in(&root, None, Some(&cache)).unwrap();
+    assert_eq!(tables(&reopened), tables(&Index::build(&root, None).unwrap()));
+
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&cache);
 }

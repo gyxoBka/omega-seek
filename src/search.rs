@@ -141,7 +141,7 @@ pub fn search(index: &Index, query: &str, options: &Options) -> Vec<Hit> {
     let asked = query_vector(index, query);
     let dense = asked
         .as_deref()
-        .map(|asked| top(&dots(&index.vectors, index.dimension, asked), &admitted))
+        .map(|asked| top(&index.chunk_scores(asked), &admitted))
         .unwrap_or_default();
     let (lexical, coverage) = lexical(index, &terms, &admitted);
     for ranking in [lexical, dense] {
@@ -156,7 +156,7 @@ pub fn search(index: &Index, query: &str, options: &Options) -> Vec<Hit> {
     let mut file_rankings = vec![file_ranks(index, &terms)];
     // A lone identifier's vector says nothing about a file.
     if let Some(asked) = asked.as_deref().filter(|_| query.split_whitespace().count() > 1) {
-        let scores = dots(&index.file_vectors, index.dimension, asked);
+        let scores = index.file_scores(asked);
         file_rankings.push(ranks_of(&top(&scores, &every_file), index.files.len()));
     }
     for (file_rank, weight) in file_rankings.iter().zip([FILE_WEIGHT, FILE_DENSE_WEIGHT]) {
@@ -185,13 +185,21 @@ pub fn search(index: &Index, query: &str, options: &Options) -> Vec<Hit> {
     // A heading that many documents share -- `## Why`, `## Done when` in
     // every task file -- is a template, not a name for what was asked.
     let mut heading_files: std::collections::HashMap<&str, std::collections::BTreeSet<u32>> = std::collections::HashMap::new();
-    for chunk in &index.chunks {
-        if index.files[chunk.file as usize].kind == Kind::Docs {
-            for name in &chunk.names {
-                if heads(name, query) {
-                    heading_files.entry(name.as_str()).or_default().insert(chunk.file);
-                }
-            }
+    // A heading that heads the query shares a word with it: only those are
+    // looked at, found by their words rather than by reading every heading.
+    let mut candidates: Vec<(u32, u32)> = plain_words(query)
+        .iter()
+        .filter_map(|word| index.headings().get(word))
+        .flatten()
+        .copied()
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    for (chunk, name) in candidates {
+        let chunk = &index.chunks[chunk as usize];
+        let name = &chunk.names[name as usize];
+        if heads(name, query) {
+            heading_files.entry(name.as_str()).or_default().insert(chunk.file);
         }
     }
     let titled = |name: &str| heading_files.get(name).is_some_and(|files| files.len() < TEMPLATE_HEADING);
@@ -326,14 +334,14 @@ fn join_neighbours(index: &Index, hits: &mut Vec<Hit>) {
 /// it contains.
 fn lexical(index: &Index, terms: &[String], admitted: &[bool]) -> (Vec<usize>, Vec<f32>) {
     let lengths: Vec<f32> = index.chunks.iter().map(|chunk| chunk.length).collect();
-    let (scores, coverage) = bm25(&index.postings, &lengths, index.average_length, terms);
+    let (scores, coverage) = bm25(|term| index.postings(term), &lengths, index.average_length, terms);
     (top(&scores, admitted), coverage)
 }
 
 /// Each file's place among the files, by BM25 over the file as one document.
 fn file_ranks(index: &Index, terms: &[String]) -> Vec<Option<usize>> {
     let (scores, _) = bm25(
-        &index.file_postings,
+        |term| index.file_postings(term),
         &index.file_lengths,
         index.average_file_length,
         terms,
@@ -353,7 +361,7 @@ fn ranks_of(ranking: &[usize], count: usize) -> Vec<Option<usize>> {
 /// BM25, scaled by how much of the question a document answers: one rare word
 /// matched five times is not a better answer than four of five words matched.
 fn bm25(
-    postings: &std::collections::HashMap<String, Vec<(u32, f32)>>,
+    postings: impl Fn(&str) -> Vec<(u32, f32)>,
     lengths: &[f32],
     average_length: f32,
     terms: &[String],
@@ -362,12 +370,13 @@ fn bm25(
     let mut scores = vec![0.0f32; lengths.len()];
     let mut matched = vec![0u16; lengths.len()];
     for term in terms {
-        let Some(postings) = postings.get(term) else {
+        let postings = postings(term);
+        if postings.is_empty() {
             continue;
-        };
+        }
         let frequency = postings.len() as f32;
         let idf = (1.0 + (count - frequency + 0.5) / (frequency + 0.5)).ln();
-        for &(document, tf) in postings {
+        for &(document, tf) in &postings {
             let length = lengths[document as usize] / average_length.max(1.0);
             let norm = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * length);
             scores[document as usize] += idf * tf * (BM25_K1 + 1.0) / norm;
@@ -382,16 +391,11 @@ fn bm25(
     (scores, coverage)
 }
 
-/// The question as the model sees it, when there is a model.
+/// The question as the model sees it, once every chunk has a vector.
 fn query_vector(index: &Index, query: &str) -> Option<Vec<f32>> {
+    let dimension = index.dense()?;
     let vector = index.model.as_ref()?.encode(&[query.to_owned()]).into_iter().next()?;
-    (index.dimension > 0 && vector.len() == index.dimension).then_some(vector)
-}
-
-fn dots(rows: &[f32], dimension: usize, asked: &[f32]) -> Vec<f32> {
-    rows.chunks(dimension)
-        .map(|row| row.iter().zip(asked).map(|(a, b)| a * b).sum())
-        .collect()
+    (dimension > 0 && vector.len() == dimension).then_some(vector)
 }
 
 fn top(scores: &[f32], admitted: &[bool]) -> Vec<usize> {
@@ -648,17 +652,19 @@ pub fn nothing_indexed(index: &Index) -> String {
     )
 }
 
+/// The words of a heading or a query as `heads` compares them.
+pub(crate) fn plain_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|word| word.chars().count() >= 2)
+        .map(str::to_lowercase)
+        .collect()
+}
+
 /// Whether a heading and a query say the same thing, or the query says the
 /// heading among other words: `## Setup` for `setup`, `install and setup`.
 fn heads(heading: &str, query: &str) -> bool {
-    let plain = |text: &str| -> Vec<String> {
-        text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .filter(|word| word.chars().count() >= 2)
-            .map(str::to_lowercase)
-            .collect()
-    };
-    let heading = plain(heading);
-    let query = plain(query);
+    let heading = plain_words(heading);
+    let query = plain_words(query);
     // A heading of one common word (`Usage`) would name every mention of it,
     // and `Limits` is not what `method and limits` asks for: the heading has
     // to say what the query says, and most of it.

@@ -12,6 +12,7 @@ use crate::search::{Content, Options, render, search};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
 
 // Every session pays for these words before it asks anything: each says what
@@ -52,7 +53,9 @@ const ROOT_RECALLED: &str = "Another directory to look in, as in `search`: your 
 
 /// Roots kept indexed at once; the least recently asked about makes room.
 const OPEN_ROOTS: usize = 4;
-/// A root with more indexable files than this was almost certainly a mistake.
+/// A root named in a call with more indexable files than this was almost
+/// certainly a mistake. Home is exempt: it is where the agent was started, and
+/// a monorepo that large is still the code being worked on.
 const WIDEST_ROOT: usize = 60_000;
 
 struct Open {
@@ -66,21 +69,40 @@ struct Server {
     home: PathBuf,
     model: Option<PathBuf>,
     open: Vec<Open>,
+    /// Home, being indexed since the server started. An agent gives a server
+    /// seconds to answer `initialize`, and a first index of a large repository
+    /// takes longer: the first call waits for its words instead, and the
+    /// vectors follow while it answers.
+    indexing: Option<Receiver<Result<Index, String>>>,
 }
 
 impl Server {
     /// The index of `root`, opened on first use and brought up to date.
     fn index(&mut self, root: &Path) -> Result<&Index, String> {
+        if root == self.home {
+            if let Some(indexing) = self.indexing.take() {
+                // A failure is reported to this call; the next one tries again.
+                let index = indexing.recv().map_err(|_| "indexing stopped unexpectedly".to_owned())??;
+                self.open.push(Open {
+                    root: root.to_path_buf(),
+                    index: Some(index),
+                    used: Instant::now(),
+                });
+            }
+        }
         let position = match self.open.iter().position(|open| open.root == root) {
             Some(position) => position,
             None => {
-                if Index::holds_more_than(root, WIDEST_ROOT) {
+                if root != self.home && Index::holds_more_than(root, WIDEST_ROOT) {
                     return Err(format!(
                         "{} holds more than {WIDEST_ROOT} source files: name a repository, or a directory that holds a few of them",
                         roots::shown(root)
                     ));
                 }
-                let mut index = Index::open(root, self.model.as_deref())?;
+                let (mut index, upkeep) = Index::open_lexical(root, self.model.as_deref(), &|_| {})?;
+                if !upkeep.is_idle() {
+                    std::thread::spawn(move || upkeep.run(&|_| {}));
+                }
                 if root != self.home {
                     index.label = format!("{}/", roots::shown(root));
                 }
@@ -114,12 +136,25 @@ impl Server {
 
 pub fn serve(root: &Path, model: Option<&Path>) -> Result<(), String> {
     let home = roots::clean(&root.canonicalize().map_err(|error| format!("{}: {error}", root.display()))?);
+    let (sender, indexing) = channel();
+    {
+        let (home, model) = (home.clone(), model.map(Path::to_path_buf));
+        std::thread::spawn(move || match Index::open_lexical(&home, model.as_deref(), &|_| {}) {
+            Ok((index, upkeep)) => {
+                let _ = sender.send(Ok(index));
+                let _ = upkeep.run(&|_| {});
+            }
+            Err(error) => {
+                let _ = sender.send(Err(error));
+            }
+        });
+    }
     let mut server = Server {
         home: home.clone(),
         model: model.map(Path::to_path_buf),
         open: Vec::new(),
+        indexing: Some(indexing),
     };
-    server.index(&home)?;
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -149,6 +184,12 @@ pub fn serve(root: &Path, model: Option<&Path>) -> Result<(), String> {
             Err(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
         };
         writeln!(stdout, "{reply}").and_then(|()| stdout.flush()).map_err(|error| error.to_string())?;
+    }
+    // The session is over: what it read again is kept for the next one.
+    for open in &mut server.open {
+        if let Some(index) = open.index.as_mut() {
+            index.persist();
+        }
     }
     Ok(())
 }
@@ -268,11 +309,18 @@ fn call(server: &mut Server, params: &Value) -> Value {
             }
             let hits = search(index, query, &options);
             let mut body = render(index, query, &hits, &options);
-            if index.model.is_none() {
+            let note = if index.model.is_none() {
+                Some("(lexical ranking only: run `omega model install` once to add the semantic channel)")
+            } else if index.embedding() {
+                Some("(lexical ranking only for now: the semantic channel is still being built)")
+            } else {
+                None
+            };
+            if let Some(note) = note {
                 if !body.ends_with('\n') {
                     body.push('\n');
                 }
-                body.push_str("(lexical ranking only: run `omega model install` once to add the semantic channel)");
+                body.push_str(note);
             }
             body
         }

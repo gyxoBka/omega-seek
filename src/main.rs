@@ -1,4 +1,4 @@
-use omega::index::Index;
+use omega::index::{Index, Progress};
 use omega::search::{Content, Options, render, search};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -9,6 +9,7 @@ omega outline <file-or-directory> [--root DIR]
 omega usages <symbol> [--root DIR] [-k N] [--path TEXT]
 omega grep <regex> [--root DIR] [-k N] [--path TEXT]
 omega eval <probes.tsv>... [--root DIR] [--limit N] [--hits N]
+omega index [--root DIR]
 omega mcp [--root DIR]
 omega model install
 omega update [--check]
@@ -85,7 +86,7 @@ fn run() -> Result<(), String> {
     // the agent would conclude the code does not exist.
     let reads_a_tree = matches!(
         command.as_str(),
-        "search" | "outline" | "usages" | "grep" | "eval" | "mcp"
+        "search" | "outline" | "usages" | "grep" | "eval" | "mcp" | "index"
     );
     if reads_a_tree && !root.is_dir() {
         return Err(format!("--root {} is not a directory", root.display()));
@@ -134,9 +135,42 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "eval" => eval(&root, model.as_deref(), &positional, eval_limit, eval_hits, options.content),
+        "index" => index(&root, model.as_deref()),
         "mcp" => omega::mcp::serve(&root, model.as_deref()),
         _ => Err(USAGE.to_owned()),
     }
+}
+
+/// `omega index`: the whole index of a repository, built before a session
+/// needs it and merged into the smallest store there is. An agent's first
+/// call in a large repository then waits for nothing.
+fn index(root: &Path, model: Option<&Path>) -> Result<(), String> {
+    let started = Instant::now();
+    // Each stage rewrites its own line, and the next one starts on a new line.
+    let shown = |progress: Progress| match progress {
+        Progress::Reading { done, total } => {
+            eprint!("\r  words        {done}/{total} files{}", if done == total { "\n" } else { "" });
+        }
+        Progress::Embedding { done, total } => {
+            eprint!("\r  vectors      {done}/{total} files{}", if done == total { "\n" } else { "" });
+        }
+        Progress::Compacting => eprintln!("  merging the store"),
+    };
+    eprintln!("\n  omega index {}\n", root.display());
+    let (index, upkeep) = Index::open_lexical(root, model, &shown)?;
+    upkeep.tidy().run(&shown)?;
+    let size = index
+        .store()
+        .and_then(|store| std::fs::metadata(store).ok())
+        .map_or(String::new(), |meta| format!(", {:.1} MB on disk", meta.len() as f64 / 1e6));
+    eprintln!(
+        "\n  {} files, {} chunks in {:.1}s{size}{}\n",
+        index.files.len(),
+        index.chunks.len(),
+        started.elapsed().as_secs_f32(),
+        if index.model.is_none() { "; lexical only: run `omega model install` for the vectors" } else { "" },
+    );
+    Ok(())
 }
 
 fn number(text: &str) -> Result<usize, String> {

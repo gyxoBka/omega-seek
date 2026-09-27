@@ -13,6 +13,7 @@ pub mod model;
 pub mod outline;
 pub mod roots;
 pub mod search;
+pub mod store;
 pub mod tokenize;
 pub mod update;
 pub mod usages;

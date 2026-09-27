@@ -241,8 +241,8 @@ fn collect(index: &Index, needle: Needle, path: Option<&str>) -> Vec<FileUsages>
         Needle::Pattern(_) => {}
     }
     let files_of = |term: &String| -> Option<BTreeSet<u32>> {
-        let postings = index.postings.get(term)?;
-        Some(postings.iter().map(|&(chunk, _)| index.chunks[chunk as usize].file).collect())
+        let postings = index.postings(term);
+        (!postings.is_empty()).then(|| postings.iter().map(|&(chunk, _)| index.chunks[chunk as usize].file).collect())
     };
     let mut candidates: Option<BTreeSet<u32>> = None;
     for term in &terms {

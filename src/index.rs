@@ -1,16 +1,16 @@
 use crate::chunk::chunk;
+use crate::store::{self, FileRecord, Segment, Stamp, VectorRows, Writer, quantize};
 use crate::tokenize::Tokenizer;
 use model2vec_rs::model::StaticModel;
 use rayon::prelude::*;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// What a file is for, which decides whether a search looks at it.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
     Code,
     Test,
@@ -40,33 +40,40 @@ pub struct FileEntry {
     pub kind: Kind,
 }
 
+/// The files and chunks of the tree as it is, read from segments: those of
+/// the store, and a delta of the files read again since.
+///
+/// The tables every answer walks -- files, chunks, their names -- are held
+/// here; the postings and vectors stay in the segments, read where they lie.
 pub struct Index {
     pub root: PathBuf,
     pub files: Vec<FileEntry>,
     pub chunks: Vec<Chunk>,
-    /// term -> (chunk, weighted frequency)
-    pub postings: HashMap<String, Vec<(u32, f32)>>,
-    pub average_length: f32,
-    /// The same, with a whole file as the document.
-    pub file_postings: HashMap<String, Vec<(u32, f32)>>,
     pub file_lengths: Vec<f32>,
+    pub average_length: f32,
     pub average_file_length: f32,
-    /// Row-major unit vectors, one per chunk; empty without a model.
-    pub vectors: Vec<f32>,
-    /// One per file: the direction its chunks share.
-    pub file_vectors: Vec<f32>,
-    pub dimension: usize,
-    pub model: Option<StaticModel>,
+    pub model: Option<Arc<StaticModel>>,
     pub tokenizer: Tokenizer,
-    /// What each file was read as, so a file that has not changed is not read
-    /// again. Keyed by relative path.
-    cache: HashMap<String, CachedFile>,
-    /// Where the cache is kept between runs, when it is.
-    store: Option<PathBuf>,
     /// What an answer puts in front of each path: nothing for the directory
     /// the agent is taken to be in, the root itself for anywhere else, so that
     /// a path in an answer can be opened as it stands.
     pub label: String,
+    segments: Vec<Arc<Segment>>,
+    delta: Option<Arc<Segment>>,
+    /// For each segment, then the delta: where its chunks and files are in
+    /// the tables above, `DEAD` for those the tree no longer has as they were.
+    maps: Vec<Map>,
+    /// For each file of the tables, which part holds it and where.
+    sources: Vec<(u32, u32)>,
+    /// The headings of documents by their words: built on the first search
+    /// after the tables change, not on every one.
+    headings: OnceLock<HashMap<String, Vec<(u32, u32)>>>,
+    /// The files read since the segments were written, which the delta holds.
+    dirty: BTreeMap<String, CachedFile>,
+    /// The tree as last walked.
+    walked: Walked,
+    /// Where the segments are kept between runs, when they are.
+    store: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Index {
@@ -75,15 +82,38 @@ impl std::fmt::Debug for Index {
             .field("root", &self.root)
             .field("files", &self.files.len())
             .field("chunks", &self.chunks.len())
+            .field("segments", &self.segments.len())
             .finish_non_exhaustive()
     }
 }
 
+const DEAD: u32 = u32::MAX;
+
+#[derive(Debug)]
+struct Map {
+    chunks: Vec<u32>,
+    files: Vec<u32>,
+    /// Chunks still live.
+    live: usize,
+}
+
 /// A name is worth this many body occurrences, and a path word this many.
+/// Both are whole: a posting's weight is a sum of them, stored as an integer.
 const NAME_WEIGHT: f32 = 3.0;
 const PATH_WEIGHT: f32 = 2.0;
+const _: () = assert!(NAME_WEIGHT as u32 as f32 == NAME_WEIGHT && PATH_WEIGHT as u32 as f32 == PATH_WEIGHT);
 const MAX_FILE_BYTES: u64 = 1 << 20;
 const MAX_NAMES: usize = 96;
+/// A first index writes what it has read every this many files, so that one
+/// interrupted -- an agent closed, a machine asleep -- resumes where it stopped.
+const BATCH_FILES: usize = 2048;
+/// Files read again during a session are written out once there are this many.
+const PERSIST_DIRTY: usize = 256;
+/// Past this many segments, or this share of dead chunks, the store is merged
+/// into one segment: each segment costs a lookup per term, and dead chunks
+/// cost disk.
+const MAX_SEGMENTS: usize = 8;
+const DEAD_SHARE: f32 = 0.25;
 /// What opens a block without declaring anything.
 const CONTROL: &[&str] = &[
     "else", "switch", "catch", "do", "try", "with", "await", "throw", "match", "loop", "when",
@@ -97,15 +127,7 @@ const KEYWORDS: &[&str] = &[
     "implements", "self", "this", "var", "let", "mut", "pub", "unsafe", "extern", "default",
 ];
 
-/// What stands for "this file as it was when read".
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-struct Stamp {
-    /// Seconds and nanoseconds since the epoch.
-    modified: Option<(u64, u32)>,
-    bytes: u64,
-}
-
-#[derive(Deserialize, Serialize)]
+/// A file as it was read, before it is written into a segment.
 struct CachedFile {
     stamp: Stamp,
     /// What the path says the file is: what the walk compares against.
@@ -118,7 +140,6 @@ struct CachedFile {
     drafts: Vec<Draft>,
 }
 
-#[derive(Deserialize, Serialize)]
 struct Draft {
     imports: bool,
     start_line: u32,
@@ -127,30 +148,28 @@ struct Draft {
     name_lines: Vec<u32>,
     length: f32,
     terms: Vec<(String, f32)>,
+    /// Empty when the file was read without the model.
     vector: Vec<f32>,
 }
 
 type Walked = Vec<(String, PathBuf, Kind, Stamp)>;
 
+/// How far an index has come, for whoever is waiting on it.
+#[derive(Clone, Copy, Debug)]
+pub enum Progress {
+    /// Files read for their words, of those that had to be.
+    Reading { done: usize, total: usize },
+    /// Files embedded, of those that had to be.
+    Embedding { done: usize, total: usize },
+    /// The store merged into one segment.
+    Compacting,
+}
+
 impl Index {
-    /// Read every indexable file under `root` and build the channels.
+    /// Read every indexable file under `root` and build the channels, keeping
+    /// nothing on disk.
     pub fn build(root: &Path, model_dir: Option<&Path>) -> Result<Self, String> {
-        let model = match model_dir {
-            Some(dir) => Some(
-                StaticModel::from_pretrained(dir, None, Some(true), None)
-                    .map_err(|error| format!("cannot load model from {}: {error}", dir.display()))?,
-            ),
-            None => None,
-        };
-        let walked = walk(root);
-        Ok(assemble(
-            root.to_path_buf(),
-            model,
-            Tokenizer::new(),
-            HashMap::new(),
-            walked,
-            None,
-        ))
+        Self::open_in(root, model_dir, None)
     }
 
     /// The same, keeping what each file was read as on disk between runs, so
@@ -159,12 +178,35 @@ impl Index {
         Self::open_in(root, model_dir, cache_dir().as_deref())
     }
 
-    /// `open`, with the caches kept under `cache_dir` instead of the user's.
+    /// `open`, with the store kept under `cache_dir` instead of the user's.
     pub fn open_in(root: &Path, model_dir: Option<&Path>, cache_dir: Option<&Path>) -> Result<Self, String> {
+        let (index, upkeep) = Self::open_lexical_in(root, model_dir, cache_dir, &|_| {})?;
+        upkeep.run(&|_| {})?;
+        Ok(index)
+    }
+
+    /// An index every file of which has been read for its words, and what is
+    /// left to do: the vectors of files read without the model, and merging
+    /// the store. Words are a fifth of the work of a first index, and all that
+    /// `usages`, `grep` and `outline` need; the rest can follow.
+    pub fn open_lexical(
+        root: &Path,
+        model_dir: Option<&Path>,
+        progress: &(dyn Fn(Progress) + Sync),
+    ) -> Result<(Self, Upkeep), String> {
+        Self::open_lexical_in(root, model_dir, cache_dir().as_deref(), progress)
+    }
+
+    pub fn open_lexical_in(
+        root: &Path,
+        model_dir: Option<&Path>,
+        cache_dir: Option<&Path>,
+        progress: &(dyn Fn(Progress) + Sync),
+    ) -> Result<(Self, Upkeep), String> {
         let store = cache_dir.and_then(|dir| store_path(dir, root, model_dir));
-        // The model, the cache and the tree do not depend on one another, and
+        // The model, the store and the tree do not depend on one another, and
         // each is a good part of a start: they are read side by side.
-        let (model, previous, walked) = std::thread::scope(|scope| {
+        let (model, opened, walked) = std::thread::scope(|scope| {
             let model = scope.spawn(|| {
                 model_dir
                     .map(|dir| {
@@ -173,48 +215,359 @@ impl Index {
                     })
                     .transpose()
             });
-            let previous = scope.spawn(|| store.as_deref().and_then(load).unwrap_or_default());
+            let opened = scope.spawn(|| store.as_deref().map(store::open).unwrap_or_default());
             let walked = walk(root);
-            (model.join(), previous.join(), walked)
+            (model.join(), opened.join(), walked)
         });
-        let model = model.map_err(|_| "loading the model panicked")??;
-        let previous = previous.unwrap_or_default();
-        let unchanged = matches(&previous, &walked);
-        let index = assemble(root.to_path_buf(), model, Tokenizer::new(), previous, walked, store);
-        if !unchanged {
-            index.save();
+        let model = model.map_err(|_| "loading the model panicked")??.map(Arc::new);
+        let mut segments = opened.map_err(|_| "reading the index panicked")?.segments;
+        if let Some(store) = &store {
+            forget_legacy(store);
         }
-        Ok(index)
-    }
 
-    fn save(&self) {
-        let Some(store) = &self.store else { return };
-        let Ok(bytes) = bincode::serialize(&(STORE_VERSION, &self.cache)) else {
-            return;
-        };
-        // Beside and renamed: a reader never sees half a cache. A cache that
-        // cannot be written is only a slower next start.
-        let aside = store.with_extension("tmp");
-        let _ = store.parent().map(std::fs::create_dir_all);
-        if std::fs::write(&aside, bytes).is_ok() {
-            let _ = std::fs::rename(&aside, store);
+        let tokenizer = Tokenizer::new();
+        // A batch written to the store is read back from it where it lies, not
+        // kept in memory: a first index of a large repository would otherwise
+        // hold all of itself twice. Should the store lose a batch -- another
+        // process merged it meanwhile -- what is missing is read again, and the
+        // last attempt keeps what it reads in memory whatever the store does.
+        for attempt in 0..3 {
+            let parts: Vec<&Arc<Segment>> = segments.iter().collect();
+            let missing: Vec<usize> = resolve(&parts, &walked)
+                .iter()
+                .enumerate()
+                .filter_map(|(at, found)| found.is_none().then_some(at))
+                .collect();
+            if missing.is_empty() {
+                break;
+            }
+            let keep = store.is_none() || attempt == 2;
+            let total = missing.len();
+            progress(Progress::Reading { done: 0, total });
+            let mut kept = Vec::new();
+            for (batch, files) in missing.chunks(BATCH_FILES).enumerate() {
+                let read: Vec<(&str, CachedFile)> = files
+                    .par_iter()
+                    .map(|&at| {
+                        let (relative, path, kind, stamp) = &walked[at];
+                        (relative.as_str(), read_file(&tokenizer, None, relative, path, *kind, *stamp))
+                    })
+                    .collect();
+                let record = write_files(read.iter().map(|(relative, cached)| (*relative, cached)));
+                // A store that cannot be written is only a slower next start.
+                let stored = !keep && store.as_deref().is_some_and(|store| store::append(store, &record).is_ok());
+                if !stored {
+                    kept.push(Segment::owned(record).ok_or("a segment just built cannot be read back")?);
+                }
+                progress(Progress::Reading { done: (batch * BATCH_FILES + files.len()).min(total), total });
+            }
+            if let (Some(store), false) = (&store, keep) {
+                segments = store::open(store).segments;
+            }
+            segments.extend(kept);
         }
+
+        let mut index = Self {
+            root: root.to_path_buf(),
+            files: Vec::new(),
+            chunks: Vec::new(),
+            file_lengths: Vec::new(),
+            average_length: 0.0,
+            average_file_length: 0.0,
+            model,
+            tokenizer,
+            label: String::new(),
+            segments,
+            delta: None,
+            maps: Vec::new(),
+            sources: Vec::new(),
+            headings: OnceLock::new(),
+            dirty: BTreeMap::new(),
+            walked,
+            store,
+        };
+        index.materialize();
+        let upkeep = index.upkeep();
+        Ok((index, upkeep))
     }
 
     /// The index of the tree as it is now. Files whose size and modification
     /// time are what they were are not read again; when nothing changed at
     /// all the index is handed back untouched.
+    ///
+    /// What changed is found by comparing this walk with the last, and the
+    /// tables are merged rather than rebuilt: what did not change is moved
+    /// into place, not read out of the segments again. An edit then costs
+    /// what walking the tree costs, and little more, whatever its size.
     #[must_use]
-    pub fn refreshed(self) -> Self {
+    pub fn refreshed(mut self) -> Self {
         let walked = walk(&self.root);
-        if matches(&self.cache, &walked) {
+        if walked == self.walked {
             return self;
         }
-        let label = self.label;
-        let mut index = assemble(self.root, self.model, self.tokenizer, self.cache, walked, self.store);
-        index.label = label;
-        index.save();
-        index
+        let (changed, gone) = differences(&self.walked, &walked);
+        self.dirty.retain(|relative, _| !gone.contains(relative.as_str()));
+        let model = self.model.as_deref();
+        let tokenizer = &self.tokenizer;
+        let read: Vec<(String, CachedFile)> = changed
+            .par_iter()
+            .map(|&at| {
+                let (relative, path, kind, stamp) = &walked[at];
+                (relative.clone(), read_file(tokenizer, model, relative, path, *kind, *stamp))
+            })
+            .collect();
+        self.dirty.extend(read);
+        self.walked = walked;
+        let old_delta = self.delta.take().map(|_| self.segments.len() as u32);
+        if !self.dirty.is_empty() {
+            self.delta =
+                Segment::owned(write_files(self.dirty.iter().map(|(relative, cached)| (relative.as_str(), cached))));
+        }
+        self.merge_tables(old_delta, &gone);
+        if self.dirty.len() >= PERSIST_DIRTY {
+            self.persist_delta();
+        }
+        self
+    }
+
+    /// Writes the files read again during the session into the store, so the
+    /// next start does not read them again.
+    pub fn persist(&mut self) {
+        self.persist_delta();
+    }
+
+    fn persist_delta(&mut self) {
+        let (Some(store), Some(delta)) = (&self.store, &self.delta) else {
+            return;
+        };
+        let Some(record) = delta.owned_record() else { return };
+        if store::append(store, record).is_ok() {
+            // Its map is the last already, as the last segment it now is.
+            self.segments.extend(self.delta.take());
+            self.dirty.clear();
+        }
+    }
+
+    /// The tables, from the newest entry of each file in the tree.
+    fn materialize(&mut self) {
+        let parts: Vec<&Arc<Segment>> = self.segments.iter().chain(self.delta.iter()).collect();
+        let mut tables = Tables::default();
+        for &(part, local) in resolve(&parts, &self.walked).iter().flatten() {
+            if parts[part].file(local).indexed {
+                tables.push_from(parts[part], part as u32, local);
+            }
+        }
+        self.install(tables);
+    }
+
+    /// The tables with the entries of `gone` files and of the old delta taken
+    /// out, and the files of the new delta put in, in path order.
+    fn merge_tables(&mut self, old_delta: Option<u32>, gone: &HashSet<String>) {
+        let delta_part = self.segments.len() as u32;
+        let delta = self.delta.clone();
+        let mut fresh = delta
+            .as_deref()
+            .map(|delta| (0..delta.file_count()).filter(|&local| delta.file(local).indexed).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .peekable();
+        let mut tables = Tables::default();
+        let mut old_chunks = std::mem::take(&mut self.chunks).into_iter().peekable();
+        let old_files = std::mem::take(&mut self.files);
+        let old_lengths = std::mem::take(&mut self.file_lengths);
+        let old_sources = std::mem::take(&mut self.sources);
+        for (old, ((entry, length), source)) in old_files.into_iter().zip(old_lengths).zip(old_sources).enumerate() {
+            if let Some(delta) = delta.as_deref() {
+                while let Some(&local) = fresh.peek().filter(|&&local| delta.file(local).path < entry.path.as_str()) {
+                    tables.push_from(delta, delta_part, local);
+                    fresh.next();
+                }
+            }
+            let keep = Some(source.0) != old_delta && !gone.contains(&entry.path);
+            let file = tables.files.len() as u32;
+            while let Some(chunk) = old_chunks.next_if(|chunk| chunk.file == old as u32) {
+                if keep {
+                    tables.chunks.push(Chunk { file, ..chunk });
+                }
+            }
+            if keep {
+                tables.files.push(entry);
+                tables.lengths.push(length);
+                tables.sources.push(source);
+            }
+        }
+        if let Some(delta) = delta.as_deref() {
+            for local in fresh {
+                tables.push_from(delta, delta_part, local);
+            }
+        }
+        self.install(tables);
+    }
+
+    /// Takes `tables` as the index's, and points every segment's map at them.
+    fn install(&mut self, tables: Tables) {
+        let parts: Vec<&Arc<Segment>> = self.segments.iter().chain(self.delta.iter()).collect();
+        let mut maps: Vec<Map> = parts
+            .iter()
+            .map(|segment| Map {
+                chunks: vec![DEAD; segment.chunk_count()],
+                files: vec![DEAD; segment.file_count()],
+                live: 0,
+            })
+            .collect();
+        let mut chunk = 0u32;
+        for (file, &(part, local)) in tables.sources.iter().enumerate() {
+            let record = parts[part as usize].file(local as usize);
+            let map = &mut maps[part as usize];
+            map.files[local as usize] = file as u32;
+            for local_chunk in record.chunk_start..record.chunk_start + record.chunk_count {
+                map.chunks[local_chunk as usize] = chunk;
+                chunk += 1;
+            }
+            map.live += record.chunk_count as usize;
+        }
+        let total_length: f32 = tables.lengths.iter().sum();
+        self.average_length = total_length / tables.chunks.len().max(1) as f32;
+        self.average_file_length = total_length / tables.lengths.len().max(1) as f32;
+        self.files = tables.files;
+        self.chunks = tables.chunks;
+        self.file_lengths = tables.lengths;
+        self.sources = tables.sources;
+        self.maps = maps;
+        self.headings = OnceLock::new();
+    }
+
+    /// Every word of every document heading, lower-cased as a query's words
+    /// are, with the chunk and the place among its names of each heading.
+    #[must_use]
+    pub fn headings(&self) -> &HashMap<String, Vec<(u32, u32)>> {
+        self.headings.get_or_init(|| {
+            let mut headings: HashMap<String, Vec<(u32, u32)>> = HashMap::new();
+            for (id, chunk) in self.chunks.iter().enumerate() {
+                if self.files[chunk.file as usize].kind != Kind::Docs {
+                    continue;
+                }
+                for (at, name) in chunk.names.iter().enumerate() {
+                    for word in crate::search::plain_words(name) {
+                        headings.entry(word).or_default().push((id as u32, at as u32));
+                    }
+                }
+            }
+            headings
+        })
+    }
+
+    fn parts(&self) -> impl Iterator<Item = (&Arc<Segment>, &Map)> {
+        self.segments.iter().chain(self.delta.iter()).zip(&self.maps)
+    }
+
+    /// Every live chunk `term` occurs in, with its weight there.
+    #[must_use]
+    pub fn postings(&self, term: &str) -> Vec<(u32, f32)> {
+        let mut found = Vec::new();
+        for (segment, map) in self.parts().filter(|(_, map)| map.live > 0) {
+            segment.postings(term, |local, weight| {
+                if let Some(&chunk) = map.chunks.get(local as usize).filter(|&&chunk| chunk != DEAD) {
+                    found.push((chunk, weight as f32));
+                }
+            });
+        }
+        found
+    }
+
+    /// Every live file `term` occurs in, its path included, with its weight there.
+    #[must_use]
+    pub fn file_postings(&self, term: &str) -> Vec<(u32, f32)> {
+        let mut found = Vec::new();
+        for (segment, map) in self.parts() {
+            segment.file_postings(term, |local, weight| {
+                if let Some(&file) = map.files.get(local as usize).filter(|&&file| file != DEAD) {
+                    found.push((file, weight as f32));
+                }
+            });
+        }
+        found
+    }
+
+    /// The dimension of the vectors, once every live chunk has one.
+    #[must_use]
+    pub fn dense(&self) -> Option<usize> {
+        self.model.as_ref()?;
+        let mut dimension = None;
+        for (segment, _) in self.parts().filter(|(_, map)| map.live > 0) {
+            dimension = Some(segment.vectors()?.dimension);
+        }
+        dimension
+    }
+
+    /// Whether vectors are still being computed for some of the chunks.
+    #[must_use]
+    pub fn embedding(&self) -> bool {
+        self.model.is_some() && !self.chunks.is_empty() && self.dense().is_none()
+    }
+
+    /// Each chunk's closeness to `asked`.
+    #[must_use]
+    pub fn chunk_scores(&self, asked: &[f32]) -> Vec<f32> {
+        let mut scores = vec![0.0f32; self.chunks.len()];
+        for (segment, map) in self.parts().filter(|(_, map)| map.live > 0) {
+            let Some(vectors) = segment.vectors() else { continue };
+            let local: Vec<f32> = (0..map.chunks.len())
+                .into_par_iter()
+                .map(|chunk| if map.chunks[chunk] == DEAD { 0.0 } else { vectors.chunk_dot(chunk, asked) })
+                .collect();
+            for (chunk, score) in map.chunks.iter().zip(local) {
+                if *chunk != DEAD {
+                    scores[*chunk as usize] = score;
+                }
+            }
+        }
+        scores
+    }
+
+    /// Each file's closeness to `asked`, by the direction its chunks share.
+    #[must_use]
+    pub fn file_scores(&self, asked: &[f32]) -> Vec<f32> {
+        let mut scores = vec![0.0f32; self.files.len()];
+        for (segment, map) in self.parts() {
+            let Some(vectors) = segment.vectors() else { continue };
+            for (local, &file) in map.files.iter().enumerate() {
+                if file != DEAD {
+                    scores[file as usize] = vectors.file_dot(local, asked);
+                }
+            }
+        }
+        scores
+    }
+
+    /// What is left to do after the words: the vectors of the segments read
+    /// without the model, and merging the store once it has grown ragged.
+    #[must_use]
+    pub fn upkeep(&self) -> Upkeep {
+        let pending = if self.model.is_some() {
+            self.parts()
+                .filter(|(segment, map)| map.live > 0 && segment.vectors().is_none())
+                .map(|(segment, _)| Arc::clone(segment))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let total: usize = self.segments.iter().map(|segment| segment.chunk_count()).sum();
+        let live: usize = self.maps.iter().take(self.segments.len()).map(|map| map.live).sum();
+        let ragged = self.segments.len() > MAX_SEGMENTS || (total - live) as f32 > total as f32 * DEAD_SHARE;
+        Upkeep {
+            root: self.root.clone(),
+            model: self.model.clone(),
+            store: self.store.clone(),
+            pending,
+            compact: ragged,
+        }
+    }
+
+    /// Where the store is, when there is one.
+    #[must_use]
+    pub fn store(&self) -> Option<&Path> {
+        self.store.as_deref()
     }
 
     /// Whether `root` holds more indexable files than `limit`, found without
@@ -237,22 +590,464 @@ impl Index {
     }
 }
 
-/// Bumped whenever chunking, tokenizing, naming or embedding changes what a
-/// file is read as: an older cache is then ignored rather than trusted.
-const STORE_VERSION: u32 = 15;
-
-/// Whether the cache describes exactly the tree that was walked.
-fn matches(cache: &HashMap<String, CachedFile>, walked: &Walked) -> bool {
-    walked.len() == cache.len()
-        && walked.iter().all(|(relative, _, kind, stamp)| {
-            cache
-                .get(relative)
-                .is_some_and(|cached| cached.stamp == *stamp && cached.walked == *kind)
-        })
+/// The work an index leaves for later: it holds what it needs, so it can be
+/// done on another thread while the index answers.
+#[derive(Debug)]
+pub struct Upkeep {
+    root: PathBuf,
+    model: Option<Arc<StaticModel>>,
+    store: Option<PathBuf>,
+    pending: Vec<Arc<Segment>>,
+    compact: bool,
 }
 
-/// One cache per repository and model: vectors from one model mean nothing
-/// to another, and a lexical-only cache has none.
+impl Upkeep {
+    /// Whether there is nothing to do.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.pending.is_empty() && !(self.compact && self.store.is_some())
+    }
+
+    /// Merge the store into one segment whatever its state: what `omega
+    /// index` leaves behind is the smallest store there is.
+    #[must_use]
+    pub fn tidy(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// Embeds what is pending, segment by segment, each written to the store
+    /// as soon as it is done and handed to the index that shares it; then
+    /// merges the store when asked to.
+    pub fn run(self, progress: &(dyn Fn(Progress) + Sync)) -> Result<(), String> {
+        if let Some(model) = &self.model {
+            let total: usize = self.pending.iter().map(|segment| segment.file_count()).sum();
+            let mut done = 0;
+            if total > 0 {
+                progress(Progress::Embedding { done, total });
+            }
+            let dimension = model
+                .encode_with_args(&["dimension".to_owned()], None, 1)
+                .first()
+                .map_or(0, Vec::len);
+            for segment in &self.pending {
+                let rows = embed(&self.root, model, dimension, segment);
+                if let Some(store) = &self.store {
+                    let _ = store::append(store, &rows.attachment(segment.id));
+                }
+                if let Some(vectors) = rows.into_vectors() {
+                    segment.attach(vectors);
+                }
+                done += segment.file_count();
+                progress(Progress::Embedding { done, total });
+            }
+        }
+        if let (Some(store), true) = (&self.store, self.compact) {
+            progress(Progress::Compacting);
+            compact(&self.root, store)?;
+        }
+        Ok(())
+    }
+}
+
+/// The vectors of a segment's chunks, from the files as they are on disk. A
+/// file changed since it was read is read again anyway, into a newer segment;
+/// its rows here are never looked at, and left empty.
+///
+/// Files are read side by side, then chunks embedded side by side: one large
+/// file among many small ones would otherwise leave every core but one idle.
+fn embed(root: &Path, model: &StaticModel, dimension: usize, segment: &Segment) -> VectorRows {
+    // Each file's text and where each of its lines lies in it, as `lines()` cuts them.
+    type Text = (String, Vec<(usize, usize)>);
+    let texts: Vec<Option<Text>> = (0..segment.file_count())
+        .into_par_iter()
+        .map(|local| {
+            let record = segment.file(local);
+            if !record.indexed || record.chunk_count == 0 {
+                return None;
+            }
+            let path = root.join(record.path);
+            if stamp_of(&std::fs::metadata(&path).ok()?) != record.stamp {
+                return None;
+            }
+            let text = std::fs::read_to_string(&path).ok()?;
+            let base = text.as_ptr() as usize;
+            let lines = text
+                .lines()
+                .map(|line| {
+                    let start = line.as_ptr() as usize - base;
+                    (start, start + line.len())
+                })
+                .collect();
+            Some((text, lines))
+        })
+        .collect();
+    let vectors: Vec<Vec<f32>> = (0..segment.chunk_count())
+        .into_par_iter()
+        .map(|chunk| {
+            let chunk = segment.chunk(chunk);
+            let Some((text, lines)) = &texts[chunk.file as usize] else {
+                return Vec::new();
+            };
+            let start = (chunk.start_line as usize).saturating_sub(1).min(lines.len());
+            let end = (chunk.end_line as usize).clamp(start, lines.len());
+            // One text per call, as when a file is read with the model.
+            let body = lines[start..end].iter().map(|&(from, to)| &text[from..to]).collect::<Vec<_>>().join("\n");
+            model
+                .encode_with_args(std::slice::from_ref(&body), None, 1)
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut rows = VectorRows::new(dimension);
+    for (local, text) in texts.iter().enumerate() {
+        let record = segment.file(local);
+        let range = record.chunk_start as usize..(record.chunk_start + record.chunk_count) as usize;
+        if text.is_some() {
+            let (row, scale) = quantize(&file_vector(vectors[range.clone()].iter().map(Vec::as_slice), dimension));
+            rows.file(&row, scale);
+        } else {
+            rows.file(&[], 0.0);
+        }
+        for vector in &vectors[range] {
+            let (row, scale) = quantize(vector);
+            rows.chunk(&row, scale);
+        }
+    }
+    rows
+}
+
+/// The direction a file's chunks share: their sum, made unit.
+fn file_vector<'a>(vectors: impl Iterator<Item = &'a [f32]>, dimension: usize) -> Vec<f32> {
+    let mut sum = vec![0.0f32; dimension];
+    for vector in vectors {
+        for (sum, value) in sum.iter_mut().zip(vector) {
+            *sum += value;
+        }
+    }
+    let norm = sum.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        sum.iter_mut().for_each(|value| *value /= norm);
+    }
+    sum
+}
+
+/// The tables of an index being put together, in path order.
+#[derive(Default)]
+struct Tables {
+    files: Vec<FileEntry>,
+    chunks: Vec<Chunk>,
+    lengths: Vec<f32>,
+    /// For each file, which part holds it and where.
+    sources: Vec<(u32, u32)>,
+}
+
+impl Tables {
+    /// The file at `local` of `segment`, the part numbered `part`, and its chunks.
+    fn push_from(&mut self, segment: &Segment, part: u32, local: usize) {
+        let record = segment.file(local);
+        let file = self.files.len() as u32;
+        self.files.push(FileEntry {
+            path: record.path.to_owned(),
+            kind: record.kind,
+        });
+        self.lengths.push(record.length);
+        self.sources.push((part, local as u32));
+        for local_chunk in record.chunk_start..record.chunk_start + record.chunk_count {
+            let chunk = segment.chunk(local_chunk as usize);
+            let (names, name_lines) = segment.names(&chunk).map(|(name, line)| (name.to_owned(), line)).unzip();
+            self.chunks.push(Chunk {
+                file,
+                start_line: chunk.start_line,
+                end_line: chunk.end_line,
+                names,
+                name_lines,
+                length: chunk.length,
+                imports: chunk.imports,
+            });
+        }
+    }
+}
+
+/// Between two walks, both in path order: which files of `after` are new or
+/// changed, and which paths of `before` no longer describe the tree -- gone,
+/// or changed.
+fn differences(before: &Walked, after: &Walked) -> (Vec<usize>, HashSet<String>) {
+    let mut changed = Vec::new();
+    let mut gone = HashSet::new();
+    let (mut old, mut new) = (0, 0);
+    loop {
+        match (before.get(old), after.get(new)) {
+            (Some(was), Some(is)) => match was.0.cmp(&is.0) {
+                std::cmp::Ordering::Less => {
+                    gone.insert(was.0.clone());
+                    old += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    changed.push(new);
+                    new += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if was.2 != is.2 || was.3 != is.3 {
+                        gone.insert(was.0.clone());
+                        changed.push(new);
+                    }
+                    old += 1;
+                    new += 1;
+                }
+            },
+            (Some(was), None) => {
+                gone.insert(was.0.clone());
+                old += 1;
+            }
+            (None, Some(_)) => {
+                changed.push(new);
+                new += 1;
+            }
+            (None, None) => return (changed, gone),
+        }
+    }
+}
+
+/// For each file of the tree, the newest entry that describes it as it is:
+/// which of `parts` holds it, and where.
+fn resolve(parts: &[&Arc<Segment>], walked: &Walked) -> Vec<Option<(usize, usize)>> {
+    let wanted: HashMap<&str, usize> =
+        walked.iter().enumerate().map(|(at, (relative, ..))| (relative.as_str(), at)).collect();
+    let mut found = vec![None; walked.len()];
+    for (part, segment) in parts.iter().enumerate().rev() {
+        for local in 0..segment.file_count() {
+            let record = segment.file(local);
+            let Some(&at) = wanted.get(record.path) else { continue };
+            let (_, _, kind, stamp) = &walked[at];
+            if found[at].is_none() && record.stamp == *stamp && record.walked == *kind {
+                found[at] = Some((part, local));
+            }
+        }
+    }
+    found
+}
+
+/// Rewrites the store as one segment of what is live in it, when it has grown
+/// ragged: many segments, or many dead chunks. Read afresh from disk, so that
+/// what other processes appended is kept too.
+fn compact(root: &Path, path: &Path) -> Result<(), String> {
+    let opened = store::open(path);
+    let walked = walk(root);
+    let parts: Vec<&Arc<Segment>> = opened.segments.iter().collect();
+    let live: Vec<(usize, usize)> = resolve(&parts, &walked).into_iter().flatten().collect();
+    let total: usize = parts.iter().map(|segment| segment.chunk_count()).sum();
+    let live_chunks: usize = live.iter().map(|&(part, local)| parts[part].file(local).chunk_count as usize).sum();
+    let listed: usize = parts.iter().map(|segment| segment.file_count()).sum();
+    if parts.len() <= 1 && live_chunks == total && live.len() == listed && opened.clean() {
+        return Ok(());
+    }
+    // A merged segment has vectors for all its chunks or none. While some live
+    // chunks still wait for theirs -- another process is reading files into
+    // the store as this one merges -- merging would throw away every vector
+    // there is: it waits for the next time instead.
+    let with_chunks = || live.iter().filter(|&&(part, local)| parts[part].file(local).chunk_count > 0);
+    let embedded = with_chunks().filter(|&&(part, _)| parts[part].vectors().is_some()).count();
+    if embedded > 0 && embedded < with_chunks().count() {
+        return Ok(());
+    }
+    let dimension = with_chunks()
+        .find_map(|&(part, _)| parts[part].vectors().map(|vectors| vectors.dimension))
+        .unwrap_or(0);
+    let record = merge(&parts, &live, dimension);
+    store::replace(path, &[&record]).map_err(|error| format!("cannot rewrite {}: {error}", path.display()))
+}
+
+/// One segment holding the `live` files of `parts`, in that order.
+fn merge(parts: &[&Arc<Segment>], live: &[(usize, usize)], dimension: usize) -> Vec<u8> {
+    let mut writer = Writer::new(dimension);
+    let mut chunk_maps: Vec<Vec<u32>> = parts.iter().map(|segment| vec![DEAD; segment.chunk_count()]).collect();
+    let mut file_maps: Vec<Vec<u32>> = parts.iter().map(|segment| vec![DEAD; segment.file_count()]).collect();
+    let mut next_chunk = 0u32;
+    for (file, &(part, local)) in live.iter().enumerate() {
+        let segment = parts[part];
+        let record = segment.file(local);
+        file_maps[part][local] = file as u32;
+        let vectors = segment.vectors().filter(|_| dimension > 0);
+        writer.file(&record, vectors.map(|vectors| vectors.file_row(local)));
+        for local_chunk in record.chunk_start..record.chunk_start + record.chunk_count {
+            let chunk = segment.chunk(local_chunk as usize);
+            chunk_maps[part][local_chunk as usize] = next_chunk;
+            next_chunk += 1;
+            writer.chunk(
+                chunk.start_line,
+                chunk.end_line,
+                chunk.length,
+                chunk.imports,
+                segment.names(&chunk),
+                vectors.map(|vectors| vectors.chunk_row(local_chunk as usize)),
+            );
+        }
+    }
+    // Every term of every part, in byte order, with the postings still live.
+    let mut heap: BinaryHeap<std::cmp::Reverse<(&[u8], usize, usize)>> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| segment.term_count() > 0)
+        .map(|(part, segment)| std::cmp::Reverse((segment.term(0), part, 0)))
+        .collect();
+    let mut postings = Vec::new();
+    let mut file_postings = Vec::new();
+    while let Some(std::cmp::Reverse((term, ..))) = heap.peek().copied() {
+        postings.clear();
+        file_postings.clear();
+        while let Some(&std::cmp::Reverse((next, part, at))) = heap.peek() {
+            if next != term {
+                break;
+            }
+            heap.pop();
+            let segment = parts[part];
+            segment.postings_at(at, |local, weight| {
+                let chunk = chunk_maps[part][local as usize];
+                if chunk != DEAD {
+                    postings.push((chunk, weight));
+                }
+            });
+            segment.file_postings_at(at, |local, weight| {
+                let file = file_maps[part][local as usize];
+                if file != DEAD {
+                    file_postings.push((file, weight));
+                }
+            });
+            if at + 1 < segment.term_count() {
+                heap.push(std::cmp::Reverse((segment.term(at + 1), part, at + 1)));
+            }
+        }
+        if postings.is_empty() && file_postings.is_empty() {
+            continue;
+        }
+        postings.sort_unstable();
+        file_postings.sort_unstable();
+        writer.term(term, &postings, &file_postings);
+    }
+    writer.finish(store::new_id())
+}
+
+/// A segment of `files`, in the order given, which is path order.
+fn write_files<'a>(files: impl Iterator<Item = (&'a str, &'a CachedFile)>) -> Vec<u8> {
+    let files: Vec<(&str, &CachedFile)> = files.collect();
+    let dimension = files
+        .iter()
+        .flat_map(|(_, cached)| cached.drafts.iter().map(|draft| draft.vector.len()))
+        .max()
+        .unwrap_or(0);
+    let mut writer = Writer::new(dimension);
+    let mut postings: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
+    let mut file_postings: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
+    let whole = |weight: f32| weight.round().max(0.0) as u32;
+    let mut next_chunk = 0u32;
+    for (file, (relative, cached)) in files.iter().enumerate() {
+        let file = file as u32;
+        let vector = (dimension > 0).then(|| {
+            quantize(&file_vector(cached.drafts.iter().map(|draft| draft.vector.as_slice()), dimension))
+        });
+        writer.file(
+            &FileRecord {
+                path: relative,
+                stamp: cached.stamp,
+                walked: cached.walked,
+                kind: cached.kind,
+                indexed: cached.indexed,
+                chunk_start: 0,
+                chunk_count: 0,
+                length: cached.drafts.iter().map(|draft| draft.length).sum(),
+            },
+            vector.as_ref().map(|(row, scale)| (row.as_slice(), *scale)),
+        );
+        if !cached.indexed {
+            continue;
+        }
+        let mut file_weights: HashMap<&str, f32> = HashMap::new();
+        for term in &cached.path_terms {
+            *file_weights.entry(term).or_default() += PATH_WEIGHT;
+        }
+        for draft in &cached.drafts {
+            for (term, weight) in &draft.terms {
+                *file_weights.entry(term).or_default() += weight;
+                let in_path = if cached.path_terms.contains(term) { PATH_WEIGHT } else { 0.0 };
+                postings.entry(term).or_default().push((next_chunk, whole(weight + in_path)));
+            }
+            for term in &cached.path_terms {
+                if draft.terms.iter().all(|(known, _)| known != term) {
+                    postings.entry(term).or_default().push((next_chunk, whole(PATH_WEIGHT)));
+                }
+            }
+            let vector = (dimension > 0).then(|| quantize(&draft.vector));
+            writer.chunk(
+                draft.start_line,
+                draft.end_line,
+                draft.length,
+                draft.imports,
+                draft.names.iter().map(String::as_str).zip(draft.name_lines.iter().copied()),
+                vector.as_ref().map(|(row, scale)| (row.as_slice(), *scale)),
+            );
+            next_chunk += 1;
+        }
+        for (term, weight) in file_weights {
+            file_postings.entry(term).or_default().push((file, whole(weight)));
+        }
+    }
+    let mut terms: Vec<&str> = postings.keys().chain(file_postings.keys()).copied().collect();
+    terms.sort_unstable();
+    terms.dedup();
+    for term in terms {
+        writer.term(
+            term.as_bytes(),
+            postings.get(term).map_or(&[][..], Vec::as_slice),
+            file_postings.get(term).map_or(&[][..], Vec::as_slice),
+        );
+    }
+    writer.finish(store::new_id())
+}
+
+/// A file read for its words, and with the model for its vectors when given.
+///
+/// A file that cannot be read as text, or is not worth reading, is remembered
+/// as such: forgetting it would make every refresh see a tree that differs
+/// from the store and read it again for nothing.
+fn read_file(
+    tokenizer: &Tokenizer,
+    model: Option<&StaticModel>,
+    relative: &str,
+    path: &Path,
+    kind: Kind,
+    stamp: Stamp,
+) -> CachedFile {
+    let text = std::fs::read_to_string(path).ok().filter(|text| !is_minified(text));
+    let Some(text) = text else {
+        return CachedFile {
+            stamp,
+            walked: kind,
+            kind,
+            indexed: false,
+            path_terms: Vec::new(),
+            drafts: Vec::new(),
+        };
+    };
+    let mut path_terms = Vec::new();
+    let mut tail: Vec<&str> = relative.rsplit('/').take(2).collect();
+    tail.reverse();
+    tokenizer.terms(&tail.join(" "), &mut path_terms);
+    path_terms.sort();
+    path_terms.dedup();
+    let tests = kind == Kind::Code && !relative.ends_with(".rs") && reads_as_tests(&text);
+    CachedFile {
+        stamp,
+        walked: kind,
+        kind: if tests { Kind::Test } else { kind },
+        indexed: true,
+        path_terms,
+        drafts: draft_file(tokenizer, model, relative, &text),
+    }
+}
+
+/// The user's cache of stores.
 fn cache_dir() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
@@ -264,6 +1059,8 @@ fn cache_dir() -> Option<PathBuf> {
     Some(base.join("omega").join("index"))
 }
 
+/// One store per repository and model: vectors from one model mean nothing
+/// to another, and a lexical-only store has none.
 fn store_path(cache_dir: &Path, root: &Path, model_dir: Option<&Path>) -> Option<PathBuf> {
     let root = root.canonicalize().ok()?;
     let model = model_dir.map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
@@ -272,13 +1069,23 @@ fn store_path(cache_dir: &Path, root: &Path, model_dir: Option<&Path>) -> Option
     hasher.update([0]);
     hasher.update(model.as_bytes());
     let name: String = hasher.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect();
-    Some(cache_dir.join(format!("{name}.bin")))
+    Some(cache_dir.join(format!("{name}.idx")))
 }
 
-fn load(store: &Path) -> Option<HashMap<String, CachedFile>> {
-    let bytes = std::fs::read(store).ok()?;
-    let (version, cache): (u32, HashMap<String, CachedFile>) = bincode::deserialize(&bytes).ok()?;
-    (version == STORE_VERSION).then_some(cache)
+/// The cache of the same repository as an earlier release kept it.
+fn forget_legacy(store: &Path) {
+    let _ = std::fs::remove_file(store.with_extension("bin"));
+}
+
+fn stamp_of(meta: &std::fs::Metadata) -> Stamp {
+    Stamp {
+        modified: meta
+            .modified()
+            .ok()
+            .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| (since.as_secs(), since.subsec_nanos())),
+        bytes: meta.len(),
+    }
 }
 
 fn walk(root: &Path) -> Walked {
@@ -314,14 +1121,7 @@ fn walk(root: &Path) -> Walked {
                 if meta.len() > MAX_FILE_BYTES {
                     return ignore::WalkState::Continue;
                 }
-                let stamp = Stamp {
-                    modified: meta
-                        .modified()
-                        .ok()
-                        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|since| (since.as_secs(), since.subsec_nanos())),
-                    bytes: meta.len(),
-                };
+                let stamp = stamp_of(&meta);
                 let relative = relative.to_string_lossy().replace('\\', "/");
                 if let Ok(mut found) = found.lock() {
                     found.push((relative, entry.into_path(), kind, stamp));
@@ -332,176 +1132,6 @@ fn walk(root: &Path) -> Walked {
     let mut walked = found.into_inner().unwrap_or_default();
     walked.sort_by(|a, b| a.0.cmp(&b.0));
     walked
-}
-
-fn assemble(
-    root: PathBuf,
-    model: Option<StaticModel>,
-    tokenizer: Tokenizer,
-    mut previous: HashMap<String, CachedFile>,
-    walked: Walked,
-    store: Option<PathBuf>,
-) -> Index {
-    // What is still valid leaves the old cache first, so the parallel stage
-    // reads only what it has to.
-    let kept: Vec<Option<CachedFile>> = walked
-        .iter()
-        .map(|(relative, _, kind, stamp)| {
-            previous
-                .remove(relative)
-                .filter(|cached| cached.stamp == *stamp && cached.walked == *kind)
-        })
-        .collect();
-    let read: Vec<Option<CachedFile>> = walked
-        .par_iter()
-        .zip(kept)
-        .map(|((relative, path, kind, stamp), kept)| {
-            if kept.is_some() {
-                return kept;
-            }
-            // A file that cannot be read as text, or is not worth reading, is
-            // remembered as such: forgetting it would make every refresh see
-            // a tree that differs from the cache and rebuild for nothing.
-            let text = std::fs::read_to_string(path).ok().filter(|text| !is_minified(text));
-            let Some(text) = text else {
-                return Some(CachedFile {
-                    stamp: *stamp,
-                    walked: *kind,
-                    kind: *kind,
-                    indexed: false,
-                    path_terms: Vec::new(),
-                    drafts: Vec::new(),
-                });
-            };
-            let mut path_terms = Vec::new();
-            let mut tail: Vec<&str> = relative.rsplit('/').take(2).collect();
-            tail.reverse();
-            tokenizer.terms(&tail.join(" "), &mut path_terms);
-            path_terms.sort();
-            path_terms.dedup();
-            let tests = *kind == Kind::Code && !relative.ends_with(".rs") && reads_as_tests(&text);
-            Some(CachedFile {
-                stamp: *stamp,
-                walked: *kind,
-                kind: if tests { Kind::Test } else { *kind },
-                indexed: true,
-                path_terms,
-                drafts: draft_file(&tokenizer, model.as_ref(), relative, &text),
-            })
-        })
-        .collect();
-
-    let dimension = read
-        .iter()
-        .flatten()
-        .flat_map(|cached| cached.drafts.iter().map(|draft| draft.vector.len()))
-        .max()
-        .unwrap_or(0);
-    let mut files = Vec::new();
-    let mut chunks = Vec::new();
-    let mut vectors = Vec::new();
-    let mut file_vectors = Vec::new();
-    let mut postings: HashMap<String, Vec<(u32, f32)>> = HashMap::new();
-    let mut file_postings: HashMap<String, Vec<(u32, f32)>> = HashMap::new();
-    let mut file_lengths = Vec::new();
-    let mut total_length = 0.0f32;
-    let mut cache = HashMap::with_capacity(walked.len());
-    for ((relative, ..), cached) in walked.into_iter().zip(read) {
-        let Some(cached) = cached else { continue };
-        if !cached.indexed {
-            cache.insert(relative, cached);
-            continue;
-        }
-        let file = files.len() as u32;
-        files.push(FileEntry {
-            path: relative.clone(),
-            kind: cached.kind,
-        });
-        let mut file_weights: HashMap<&str, f32> = HashMap::new();
-        for term in &cached.path_terms {
-            *file_weights.entry(term).or_default() += PATH_WEIGHT;
-        }
-        let mut file_length = 0.0f32;
-        let mut file_vector = vec![0.0f32; dimension];
-        for draft in &cached.drafts {
-            let id = chunks.len() as u32;
-            for (term, weight) in &draft.terms {
-                *file_weights.entry(term).or_default() += weight;
-                let in_path = if cached.path_terms.contains(term) {
-                    PATH_WEIGHT
-                } else {
-                    0.0
-                };
-                postings
-                    .entry(term.clone())
-                    .or_default()
-                    .push((id, weight + in_path));
-            }
-            for term in &cached.path_terms {
-                if draft.terms.iter().all(|(known, _)| known != term) {
-                    postings
-                        .entry(term.clone())
-                        .or_default()
-                        .push((id, PATH_WEIGHT));
-                }
-            }
-            file_length += draft.length;
-            if dimension > 0 {
-                let start = vectors.len();
-                vectors.extend_from_slice(&draft.vector);
-                vectors.resize(start + dimension, 0.0);
-                for (sum, value) in file_vector.iter_mut().zip(&draft.vector) {
-                    *sum += value;
-                }
-            }
-            chunks.push(Chunk {
-                file,
-                start_line: draft.start_line,
-                end_line: draft.end_line,
-                names: draft.names.clone(),
-                name_lines: draft.name_lines.clone(),
-                length: draft.length,
-                imports: draft.imports,
-            });
-        }
-        let norm = file_vector
-            .iter()
-            .map(|value| value * value)
-            .sum::<f32>()
-            .sqrt();
-        if norm > 0.0 {
-            file_vector.iter_mut().for_each(|value| *value /= norm);
-        }
-        file_vectors.extend(file_vector);
-        for (term, weight) in file_weights {
-            file_postings
-                .entry(term.to_owned())
-                .or_default()
-                .push((file, weight));
-        }
-        total_length += file_length;
-        file_lengths.push(file_length);
-        cache.insert(relative, cached);
-    }
-
-    Index {
-        root,
-        files,
-        average_length: total_length / chunks.len().max(1) as f32,
-        chunks,
-        postings,
-        average_file_length: total_length / file_lengths.len().max(1) as f32,
-        file_postings,
-        file_lengths,
-        vectors,
-        file_vectors,
-        dimension,
-        model,
-        tokenizer,
-        cache,
-        store,
-        label: String::new(),
-    }
 }
 
 fn draft_file(tokenizer: &Tokenizer, model: Option<&StaticModel>, relative: &str, text: &str) -> Vec<Draft> {

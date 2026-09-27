@@ -44,12 +44,33 @@ fn name(id: &str) -> std::io::Result<Name<'static>> {
 }
 
 #[cfg(unix)]
+const SOCKET_PATH_MOST: usize = 100;
+
+#[cfg(unix)]
+fn private(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    std::fs::create_dir_all(dir)?;
+    let owner = std::fs::metadata(dir)?.uid();
+    let home = crate::paths::state().and_then(|state| state.parent().map(Path::to_path_buf)).and_then(|dir| std::fs::metadata(dir).ok());
+    if home.is_some_and(|home| home.uid() != owner) {
+        return Err(std::io::Error::other(format!("{} belongs to another user", dir.display())));
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(unix)]
 fn socket_path(id: &str) -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = crate::paths::sockets().ok_or_else(|| std::io::Error::other("no directory for the socket"))?;
-    std::fs::create_dir_all(&dir)?;
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    Ok(dir.join(format!("daemon-{id}.sock")))
+    let name = format!("daemon-{id}.sock");
+    if let Some(dir) = crate::paths::sockets() {
+        let path = dir.join(&name);
+        if path.as_os_str().len() <= SOCKET_PATH_MOST {
+            private(&dir)?;
+            return Ok(path);
+        }
+    }
+    let dir = crate::paths::short_sockets().ok_or_else(|| std::io::Error::other("no directory for the socket"))?;
+    private(&dir)?;
+    Ok(dir.join(name))
 }
 
 fn shown_name(id: &str) -> String {

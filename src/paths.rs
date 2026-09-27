@@ -55,6 +55,20 @@ pub fn sockets() -> Option<PathBuf> {
     env("XDG_RUNTIME_DIR").map(|dir| dir.join("omega")).or_else(state)
 }
 
+#[cfg(unix)]
+#[must_use]
+pub fn short_sockets() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt as _;
+    let uid = std::fs::metadata(home()?).ok()?.uid();
+    Some(PathBuf::from(format!("/tmp/omega-{uid}")))
+}
+
+#[cfg(not(unix))]
+#[must_use]
+pub fn short_sockets() -> Option<PathBuf> {
+    None
+}
+
 #[must_use]
 pub fn settings() -> Option<PathBuf> {
     Some(config()?.join("omega").join("config.json"))

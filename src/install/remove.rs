@@ -316,7 +316,7 @@ fn remove(dirs: &Dirs, found: &Found, parts: &[Part], chosen: &[&Agent], integra
             let removed = std::fs::remove_dir_all(dir).is_ok();
             println!("  index caches         {} {}", if removed { format!("removed {}", size(*bytes)) } else { "could not remove".to_owned() }, dir.display());
         }
-        for dir in [crate::paths::state(), crate::paths::sockets()].into_iter().flatten() {
+        for dir in [crate::paths::state(), crate::paths::sockets(), crate::paths::short_sockets()].into_iter().flatten() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     if entry.file_name().to_string_lossy().starts_with("daemon-") {

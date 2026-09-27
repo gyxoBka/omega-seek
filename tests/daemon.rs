@@ -170,3 +170,22 @@ fn a_disabled_daemon_leaves_sessions_to_answer_themselves() {
     assert!(run(&ws, &["daemon", "status"]).0);
     finish(&ws);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_socket_directory_too_long_for_a_socket_is_passed_over() {
+    let ws = workspace("long");
+    let long = ws.join("run").join("x".repeat(120));
+    std::fs::create_dir_all(&long).unwrap();
+    let run_long = |args: &[&str]| {
+        let output = omega(&ws).env("XDG_RUNTIME_DIR", &long).args(args).arg("--no-model").current_dir(ws.join("home")).output().unwrap();
+        (output.status.success(), String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr))
+    };
+    let (ok, said) = run_long(&["daemon", "start"]);
+    assert!(ok && said.contains("started"), "{said}");
+    let (ok, said) = run_long(&["daemon", "status"]);
+    assert!(ok && said.contains("/tmp/omega-"), "{said}");
+    let (ok, said) = run_long(&["daemon", "stop"]);
+    assert!(ok && said.contains("stopped 1"), "{said}");
+    let _ = std::fs::remove_dir_all(&ws);
+}

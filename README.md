@@ -158,6 +158,19 @@ omega daemon stop       # stop it now; the next session starts it again
 omega daemon disable    # every session answers from its own process, as before
 ```
 
+## The cache
+
+Each repository's index is a file under `%LOCALAPPDATA%\omega\index` or
+`~/.cache/omega/index`. It cleans itself: a repository not opened for 30 days,
+and what an earlier release wrote, are removed without being asked.
+
+```sh
+omega cache              # where it is, how large, how it is cleaned
+omega cache clean        # clean now
+omega cache clear        # remove every index; each is built again when next used
+omega cache auto 14      # clean what is not opened for 14 days; `auto off` keeps it
+```
+
 ## Keeping things out of the index
 
 `.gitignore` is honoured, with or without a `.git`. Add a `.omegaignore` (same

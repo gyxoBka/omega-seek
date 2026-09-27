@@ -254,7 +254,16 @@ impl Engine {
         let slots = self.slots.lock().map(|slots| slots.clone()).unwrap_or_default();
         slots
             .iter()
-            .map(|slot| match slot.state.try_lock() {
+            .map(|slot| match slot.state.try_lock().map(|mut state| {
+                if let Some(ready) = state.pending.as_ref().and_then(|pending| pending.try_recv().ok()) {
+                    state.pending = None;
+                    if let Ok((index, watching)) = ready {
+                        state.index = Some(index);
+                        state.watching = Some(watching);
+                    }
+                }
+                state
+            }) {
                 Ok(state) if state.index.is_none() => Opening {
                     root: slot.root.clone(),
                     files: 0,

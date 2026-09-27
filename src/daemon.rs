@@ -361,8 +361,9 @@ pub fn run(model: Option<&Path>) -> Result<(), String> {
         let _ = std::fs::write(&file, json!({"pid": std::process::id(), "version": env!("CARGO_PKG_VERSION")}).to_string());
     }
     std::thread::spawn(|| {
-        if let Some(dir) = crate::paths::stores() {
-            let _ = crate::store::prune(&dir, crate::store::ABANDONED);
+        loop {
+            let _ = crate::cache::clean();
+            std::thread::sleep(Duration::from_secs(24 * 3600));
         }
     });
     let idle = std::env::var("OMEGA_DAEMON_IDLE_SECS").ok().and_then(|secs| secs.parse().ok()).map_or(IDLE, Duration::from_secs);

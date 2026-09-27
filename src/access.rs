@@ -44,6 +44,26 @@ impl Access {
     }
 
     #[must_use]
+    pub fn cache_days(&self) -> Option<u64> {
+        let days = self.settings.get("cache").and_then(|cache| cache.get("clean_after_days")).and_then(Value::as_u64);
+        match days {
+            Some(0) => None,
+            Some(days) => Some(days),
+            None => Some(crate::cache::DEFAULT_DAYS),
+        }
+    }
+
+    pub fn set_cache_days(&mut self, days: Option<u64>) {
+        let cache = self.settings.entry("cache").or_insert_with(|| Value::Object(Map::new()));
+        if !cache.is_object() {
+            *cache = Value::Object(Map::new());
+        }
+        if let Some(cache) = cache.as_object_mut() {
+            cache.insert("clean_after_days".to_owned(), Value::from(days.unwrap_or(0)));
+        }
+    }
+
+    #[must_use]
     pub fn daemon(&self) -> bool {
         self.settings.get("daemon").and_then(Value::as_bool).unwrap_or(true)
     }

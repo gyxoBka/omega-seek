@@ -9,7 +9,8 @@ omega outline <file-or-directory> [--root DIR]
 omega usages <symbol> [--root DIR] [-k N] [--path TEXT]
 omega grep <regex> [--root DIR] [-k N] [--path TEXT]
 omega eval <probes.tsv>... [--root DIR] [--limit N] [--hits N]
-omega index [--root DIR] [--prune]
+omega index [--root DIR]
+omega cache [status | clean | clear | auto <days|off>]
 omega access [add <dir> | remove <dir> | list [--all] | forget <repo>]
 omega mcp [--root DIR]
 omega daemon [status | start | stop [--all] | restart | enable | disable]
@@ -142,7 +143,8 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "eval" => eval(&root, model.as_deref(), &positional, eval_limit, eval_hits, options.content),
-        "index" if prune => prune_stores(),
+        "index" if prune => omega::cache::run(&["clean".to_owned()]),
+        "cache" => omega::cache::run(&positional),
         "index" => index(&root, model.as_deref()),
         "access" => omega::access::run(&positional, all),
         "mcp" => omega::mcp::serve(&root, model.as_deref()),
@@ -175,18 +177,6 @@ fn index(root: &Path, model: Option<&Path>) -> Result<(), String> {
         index.chunks.len(),
         started.elapsed().as_secs_f32(),
         if index.model.is_none() { "; lexical only: run `omega model install` for the vectors" } else { "" },
-    );
-    Ok(())
-}
-
-fn prune_stores() -> Result<(), String> {
-    let dir = omega::paths::stores().ok_or("cannot tell where the index stores are kept")?;
-    let (files, bytes) = omega::store::prune(&dir, omega::store::ABANDONED);
-    println!(
-        "  removed {files} file{} ({:.1} MB) from {}",
-        if files == 1 { "" } else { "s" },
-        bytes as f64 / 1e6,
-        dir.display()
     );
     Ok(())
 }

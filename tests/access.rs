@@ -195,15 +195,18 @@ fn stores_not_opened_for_a_month_are_pruned_and_nothing_else() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 24 * 3600);
-    for (name, aged) in [("old.idx", true), ("old.bin", true), ("fresh.idx", false), ("left.idx.1.tmp", true), ("notes.txt", true)] {
+    let mut head = b"OMEGAIDX".to_vec();
+    head.extend_from_slice(&omega::store::VERSION.to_le_bytes());
+    head.extend_from_slice(&[0; 12]);
+    for (name, aged) in [("old.idx", true), ("old.bin", false), ("fresh.idx", false), ("left.idx.1.tmp", true), ("notes.txt", true)] {
         let path = dir.join(name);
-        std::fs::write(&path, b"x").unwrap();
+        std::fs::write(&path, &head).unwrap();
         if aged {
             std::fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
         }
     }
-    let (files, _) = omega::store::prune(&dir, omega::store::ABANDONED);
-    assert_eq!(files, 3);
+    let (files, _) = omega::store::prune(&dir, Some(std::time::Duration::from_secs(30 * 24 * 3600)));
+    assert_eq!(files, 3, "the old store, the store of an earlier release whatever its age, what a crash left aside");
     let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect();
     left.sort();
     assert_eq!(left, ["fresh.idx", "notes.txt"]);

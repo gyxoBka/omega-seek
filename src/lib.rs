@@ -1,4 +1,5 @@
 pub mod access;
+pub mod cache;
 pub mod chunk;
 pub mod daemon;
 pub mod engine;

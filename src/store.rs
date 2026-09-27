@@ -820,6 +820,9 @@ pub fn append(path: &Path, record: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    if !starts_current(path) {
+        return replace(path, &[record]);
+    }
     if !ends_whole(path) {
         let opened = open(path);
         let kept = open_prefix(path, opened.clean_end)?;
@@ -828,6 +831,17 @@ pub fn append(path: &Path, record: &[u8]) -> std::io::Result<()> {
     }
     let mut file = options().append(true).create(true).open(path)?;
     file.write_all(record)
+}
+
+fn head_version(path: &Path) -> Option<u32> {
+    use std::io::Read;
+    let mut head = [0u8; 12];
+    options().read(true).open(path).ok()?.read_exact(&mut head).ok()?;
+    (&head[..8] == MAGIC).then(|| u32_at(&head, 8))
+}
+
+fn starts_current(path: &Path) -> bool {
+    std::fs::metadata(path).map_or(true, |meta| meta.len() == 0) || head_version(path) == Some(VERSION)
 }
 
 fn ends_whole(path: &Path) -> bool {
@@ -877,26 +891,51 @@ pub fn touch(path: &Path) {
     }
 }
 
-pub const ABANDONED: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
 const LEFT_ASIDE: std::time::Duration = std::time::Duration::from_secs(3600);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Standing {
+    Current,
+    Outdated,
+    LeftAside,
+}
+
 #[must_use]
-pub fn prune(dir: &Path, abandoned: std::time::Duration) -> (usize, u64) {
+pub fn standing(path: &Path) -> Option<Standing> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let meta = std::fs::metadata(path).ok().filter(std::fs::Metadata::is_file)?;
+    let age = meta.modified().ok().and_then(|at| at.elapsed().ok()).unwrap_or_default();
+    if name.ends_with(".tmp") {
+        return Some(if age > LEFT_ASIDE { Standing::LeftAside } else { Standing::Current });
+    }
+    if name.ends_with(".bin") {
+        return Some(Standing::Outdated);
+    }
+    if !name.ends_with(".idx") {
+        return None;
+    }
+    Some(match head_version(path) {
+        Some(version) if version < VERSION => Standing::Outdated,
+        Some(_) => Standing::Current,
+        None if age > LEFT_ASIDE => Standing::Outdated,
+        None => Standing::Current,
+    })
+}
+
+#[must_use]
+pub fn prune(dir: &Path, unused: Option<std::time::Duration>) -> (usize, u64) {
     let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
-    let now = std::time::SystemTime::now();
     let mut removed = (0, 0);
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let limit = if name.ends_with(".idx") || name.ends_with(".bin") {
-            abandoned
-        } else if name.ends_with(".tmp") {
-            LEFT_ASIDE
-        } else {
-            continue;
-        };
+        let path = entry.path();
+        let Some(standing) = standing(&path) else { continue };
         let Ok(meta) = entry.metadata() else { continue };
-        let age = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
-        if meta.is_file() && age > limit && std::fs::remove_file(entry.path()).is_ok() {
+        let age = meta.modified().ok().and_then(|at| at.elapsed().ok()).unwrap_or_default();
+        let gone = match standing {
+            Standing::Outdated | Standing::LeftAside => true,
+            Standing::Current => path.extension().is_some_and(|ext| ext == "idx") && unused.is_some_and(|unused| age > unused),
+        };
+        if gone && std::fs::remove_file(&path).is_ok() {
             removed.0 += 1;
             removed.1 += meta.len();
         }
@@ -966,6 +1005,25 @@ mod tests {
         let asked = [0.5, -0.5, 0.25, 0.0];
         assert!((vectors.chunk_dot(1, &asked) - 0.5625).abs() < 0.01);
         assert!(vectors.file_dot(1, &asked).abs() < f32::EPSILON, "a skipped file has a zero row");
+    }
+
+    #[test]
+    fn a_store_of_an_earlier_format_is_written_anew_not_appended_to() {
+        let dir = std::env::temp_dir().join(format!("omega-store-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.idx");
+        let mut earlier = framed(LEXICAL, b"from an earlier release");
+        earlier[8..12].copy_from_slice(&(VERSION - 1).to_le_bytes());
+        std::fs::write(&path, &earlier).unwrap();
+        assert!(open(&path).segments.is_empty());
+        assert_eq!(standing(&path), Some(Standing::Outdated));
+        let mut writer = Writer::new(0);
+        writer.file(&record("a.rs", 0), None);
+        append(&path, &writer.finish(new_id())).unwrap();
+        assert_eq!(open(&path).segments.len(), 1, "the new record is found, not hidden behind the old one");
+        assert_eq!(standing(&path), Some(Standing::Current));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

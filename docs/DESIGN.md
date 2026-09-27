@@ -170,9 +170,15 @@ it through a shell, which the harness already governs. The settings are read
 on every call, so access given takes effect without a restart, and settings
 that cannot be read give nothing rather than stopping the server.
 
-A store not opened for a month -- its time is set on every opening -- belongs to
-a repository no longer worked on, and goes at the next server start, as does
-what a crash left aside; `omega index --prune` does it at once.
+The stores clean themselves: when the daemon starts, and once a day while it
+runs, a store not opened for thirty days -- its time is set on every opening --
+goes, as a repository no longer worked on, and so does what a crash left aside.
+A store an earlier release wrote goes whatever its age: no later release reads
+it. The thirty days are a setting (`omega cache auto <days>`, or `off`), and
+`omega cache clean` does the same at once; `omega cache clear` removes every
+store, stopping the daemon first since it holds them open. A store whose first
+record is of an earlier format is written anew, not appended to: its records
+would never be read past the first, and the file would only grow.
 
 No harness tells an MCP server where its agent currently is -- roots are
 deprecated in the protocol, and hooks would tie this to one harness -- so the

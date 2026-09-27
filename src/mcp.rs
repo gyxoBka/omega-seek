@@ -95,9 +95,7 @@ enum Answerer {
 impl Answerer {
     fn local(home: &Path, model: Option<&Path>) -> Self {
         std::thread::spawn(|| {
-            if let Some(dir) = crate::paths::stores() {
-                let _ = crate::store::prune(&dir, crate::store::ABANDONED);
-            }
+            let _ = crate::cache::clean();
         });
         let engine = Engine::new(model.map(Path::to_path_buf), OPEN_ROOTS);
         engine.pin(home);

@@ -405,3 +405,45 @@ fn an_index_kept_up_to_date_holds_what_one_built_afresh_does() {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+#[test]
+fn a_worktree_reads_only_the_files_its_main_checkout_does_not_hold_as_they_are() {
+    let ws = scratch("borrowed");
+    let cache = scratch("borrowed-cache");
+    let (main, fix) = (ws.join("app"), ws.join("app-fix"));
+    for dir in [main.join(".git/worktrees/fix"), main.join("src"), fix.join("src")] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(fix.join(".git"), format!("gitdir: {}\n", main.join(".git/worktrees/fix").display())).unwrap();
+    std::fs::write(main.join(".git/worktrees/fix/commondir"), "../..\n").unwrap();
+    std::fs::write(main.join(".git/worktrees/fix/gitdir"), format!("{}\n", fix.join(".git").display())).unwrap();
+    for at in 0..30 {
+        let text = format!("fn shared_{at}() {{\n    todo!()\n}}\n");
+        std::fs::write(main.join(format!("src/m{at:02}.rs")), &text).unwrap();
+        std::fs::write(fix.join(format!("src/m{at:02}.rs")), &text).unwrap();
+    }
+    std::fs::write(fix.join("src/m07.rs"), "fn changed_in_fix() {\n    todo!()\n}\n").unwrap();
+    std::fs::write(fix.join("src/only_fix.rs"), "fn only_in_fix() {\n    todo!()\n}\n").unwrap();
+    drop(Index::open_in(&main, None, Some(&cache)).unwrap());
+
+    let read = std::sync::Mutex::new(Vec::new());
+    let (index, _) = Index::open_lexical_in(&fix, None, Some(&cache), &|progress| {
+        if let omega::index::Progress::Reading { total, .. } = progress {
+            read.lock().unwrap().push(total);
+        }
+    })
+    .unwrap();
+    assert_eq!(read.lock().unwrap().first().copied(), Some(2), "only the changed and the new file are read");
+    assert_eq!(first_path(&index, "changed_in_fix").as_deref(), Some("src/m07.rs"));
+    assert_eq!(first_path(&index, "shared_3").as_deref(), Some("src/m03.rs"));
+    assert_eq!(tables(&index), tables(&Index::build(&fix, None).unwrap()));
+    drop(index);
+    let (again, _) = Index::open_lexical_in(&fix, None, Some(&cache), &|progress| {
+        assert!(!matches!(progress, omega::index::Progress::Reading { .. }), "a second start reads nothing");
+    })
+    .unwrap();
+    assert_eq!(tables(&again), tables(&Index::build(&fix, None).unwrap()));
+    drop(again);
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&cache);
+}

@@ -1,4 +1,5 @@
 use crate::chunk::chunk;
+use crate::roots;
 use crate::store::{self, FileRecord, Segment, Stamp, VectorRows, Writer, quantize};
 use crate::tokenize::Tokenizer;
 use model2vec_rs::model::StaticModel;
@@ -138,6 +139,7 @@ struct CachedFile {
     indexed: bool,
     path_terms: Vec<String>,
     drafts: Vec<Draft>,
+    hash: [u8; 16],
 }
 
 struct Draft {
@@ -227,6 +229,25 @@ impl Index {
         }
 
         let tokenizer = Tokenizer::new();
+        if let (Some(store), Some(cache_dir)) = (&store, cache_dir) {
+            let parts: Vec<&Arc<Segment>> = segments.iter().collect();
+            let missing: Vec<usize> = resolve(&parts, &walked)
+                .iter()
+                .enumerate()
+                .filter_map(|(at, found)| found.is_none().then_some(at))
+                .collect();
+            let records = borrowed(root, model_dir, cache_dir, &walked, &missing);
+            let mut kept = Vec::new();
+            for record in &records {
+                if store::append(store, record).is_err() {
+                    kept.extend(Segment::owned(record.clone()));
+                }
+            }
+            if !records.is_empty() {
+                segments = store::open(store).segments;
+                segments.extend(kept);
+            }
+        }
         // A batch written to the store is read back from it where it lies, not
         // kept in memory: a first index of a large repository would otherwise
         // hold all of itself twice. Should the store lose a batch -- another
@@ -880,19 +901,22 @@ fn compact(root: &Path, path: &Path) -> Result<(), String> {
     let dimension = with_chunks()
         .find_map(|&(part, _)| parts[part].vectors().map(|vectors| vectors.dimension))
         .unwrap_or(0);
-    let record = merge(&parts, &live, dimension);
+    let record = merge(&parts, &live, None, dimension);
     store::replace(path, &[&record]).map_err(|error| format!("cannot rewrite {}: {error}", path.display()))
 }
 
 /// One segment holding the `live` files of `parts`, in that order.
-fn merge(parts: &[&Arc<Segment>], live: &[(usize, usize)], dimension: usize) -> Vec<u8> {
+fn merge(parts: &[&Arc<Segment>], live: &[(usize, usize)], stamps: Option<&[Stamp]>, dimension: usize) -> Vec<u8> {
     let mut writer = Writer::new(dimension);
     let mut chunk_maps: Vec<Vec<u32>> = parts.iter().map(|segment| vec![DEAD; segment.chunk_count()]).collect();
     let mut file_maps: Vec<Vec<u32>> = parts.iter().map(|segment| vec![DEAD; segment.file_count()]).collect();
     let mut next_chunk = 0u32;
     for (file, &(part, local)) in live.iter().enumerate() {
         let segment = parts[part];
-        let record = segment.file(local);
+        let mut record = segment.file(local);
+        if let Some(stamps) = stamps {
+            record.stamp = stamps[file];
+        }
         file_maps[part][local] = file as u32;
         let vectors = segment.vectors().filter(|_| dimension > 0);
         writer.file(&record, vectors.map(|vectors| vectors.file_row(local)));
@@ -982,6 +1006,7 @@ fn write_files<'a>(files: impl Iterator<Item = (&'a str, &'a CachedFile)>) -> Ve
                 chunk_start: 0,
                 chunk_count: 0,
                 length: cached.drafts.iter().map(|draft| draft.length).sum(),
+                hash: cached.hash,
             },
             vector.as_ref().map(|(row, scale)| (row.as_slice(), *scale)),
         );
@@ -1044,7 +1069,9 @@ fn read_file(
     kind: Kind,
     stamp: Stamp,
 ) -> CachedFile {
-    let text = std::fs::read_to_string(path).ok().filter(|text| !is_minified(text));
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let hash = content_hash(&bytes);
+    let text = String::from_utf8(bytes).ok().filter(|text| !is_minified(text));
     let Some(text) = text else {
         return CachedFile {
             stamp,
@@ -1053,6 +1080,7 @@ fn read_file(
             indexed: false,
             path_terms: Vec::new(),
             drafts: Vec::new(),
+            hash,
         };
     };
     let mut path_terms = Vec::new();
@@ -1069,7 +1097,61 @@ fn read_file(
         indexed: true,
         path_terms,
         drafts: draft_file(tokenizer, model, relative, &text),
+        hash,
     }
+}
+
+fn content_hash(bytes: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(bytes);
+    let mut hash = [0u8; 16];
+    hash.copy_from_slice(&digest[..16]);
+    hash
+}
+
+fn borrowed(root: &Path, model_dir: Option<&Path>, cache_dir: &Path, walked: &Walked, missing: &[usize]) -> Vec<Vec<u8>> {
+    let main = roots::repository(root);
+    if missing.is_empty() || !main.join(".git").exists() {
+        return Vec::new();
+    }
+    let checkouts = std::iter::once(main.clone()).chain(roots::linked_worktrees(&main).into_iter().map(|worktree| worktree.path));
+    let donors: Vec<Arc<Segment>> = checkouts
+        .filter(|checkout| checkout.as_path() != root)
+        .filter_map(|checkout| store_path(cache_dir, &checkout, model_dir))
+        .filter(|store| store.is_file())
+        .flat_map(|store| store::open(&store).segments)
+        .collect();
+    if donors.is_empty() {
+        return Vec::new();
+    }
+    let mut newest: HashMap<&str, (usize, usize)> = HashMap::new();
+    for (part, segment) in donors.iter().enumerate().rev() {
+        for local in 0..segment.file_count() {
+            newest.entry(segment.file(local).path).or_insert((part, local));
+        }
+    }
+    let found: Vec<(usize, usize, Stamp)> = missing
+        .par_iter()
+        .filter_map(|&at| {
+            let (relative, path, kind, stamp) = &walked[at];
+            let &(part, local) = newest.get(relative.as_str())?;
+            let record = donors[part].file(local);
+            (record.walked == *kind && record.hash == content_hash(&std::fs::read(path).ok()?)).then_some((part, local, *stamp))
+        })
+        .collect();
+    let parts: Vec<&Arc<Segment>> = donors.iter().collect();
+    let mut records = Vec::new();
+    for embedded in [true, false] {
+        let group: Vec<&(usize, usize, Stamp)> =
+            found.iter().filter(|(part, ..)| donors[*part].vectors().is_some() == embedded).collect();
+        if group.is_empty() {
+            continue;
+        }
+        let dimension = group.first().and_then(|(part, ..)| donors[*part].vectors()).map_or(0, |vectors| vectors.dimension);
+        let entries: Vec<(usize, usize)> = group.iter().map(|&&(part, local, _)| (part, local)).collect();
+        let stamps: Vec<Stamp> = group.iter().map(|&&(.., stamp)| stamp).collect();
+        records.push(merge(&parts, &entries, Some(&stamps), dimension));
+    }
+    records
 }
 
 /// The user's cache of stores.

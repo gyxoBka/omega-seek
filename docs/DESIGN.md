@@ -183,6 +183,17 @@ worktrees (read from `.git/worktrees`) names them. Calls are stateless:
 sub-agents can share one server process, and one in a worktree must not
 redirect the others.
 
+A worktree is another root, and was indexed from nothing, though it holds
+what its main checkout holds but for the files a branch changed: the stamps
+differ, the contents do not. Each file's entry now carries a hash of its
+contents, and a checkout indexed for the first time looks in the stores of the
+other checkouts of its repository first: an entry with the same path and the
+same hash is copied as it is -- chunks, postings, vectors -- under the new
+stamp, the way segments are merged, and only the rest is read. On a copy of a
+2,100-file repository with ten files changed, the worktree read and embedded
+ten. Nothing is stored twice: the stores of the checkouts are each other's
+cache.
+
 ## One daemon for every session
 
 An `omega mcp` per agent means an index per agent: the postings and vectors are

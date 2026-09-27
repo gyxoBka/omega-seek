@@ -32,7 +32,7 @@ const FOOTER: usize = 16;
 /// Bumped whenever what a file is read as changes -- chunking, tokenizing,
 /// naming, embedding -- or the layout does: an older segment is then skipped
 /// rather than trusted, and the file is rewritten.
-pub const VERSION: u32 = 16;
+pub const VERSION: u32 = 17;
 
 const LEXICAL: u32 = 1;
 const VECTORS: u32 = 2;
@@ -49,7 +49,7 @@ const SECTIONS: usize = 8;
 /// The id, then an offset and a length for each section.
 const PREFIX: usize = 8 + SECTIONS * 16;
 
-const FILE_RECORD: usize = 44;
+const FILE_RECORD: usize = 60;
 const CHUNK_RECORD: usize = 24;
 const NAME_RECORD: usize = 12;
 const TERM_RECORD: usize = 32;
@@ -171,6 +171,7 @@ pub struct FileRecord<'a> {
     pub chunk_count: u32,
     /// Its chunks' lengths in terms, together.
     pub length: f32,
+    pub hash: [u8; 16],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -398,6 +399,7 @@ impl Segment {
             chunk_start: u32_at(bytes, at + 32),
             chunk_count: u32_at(bytes, at + 36),
             length: f32_at(bytes, at + 40),
+            hash: bytes[at + 44..at + 60].try_into().unwrap_or_default(),
         }
     }
 
@@ -681,6 +683,7 @@ impl Writer {
         self.open_file = Some(self.files.len());
         self.files.extend_from_slice(&0u32.to_le_bytes());
         self.files.extend_from_slice(&record.length.to_le_bytes());
+        self.files.extend_from_slice(&record.hash);
         if let Some(rows) = &mut self.vectors {
             let (row, scale) = vector.unwrap_or((&[], 0.0));
             rows.file(row, scale);
@@ -1008,6 +1011,7 @@ mod tests {
             chunk_start: 0,
             chunk_count,
             length: 5.0,
+            hash: [7; 16],
         }
     }
 
@@ -1028,6 +1032,7 @@ mod tests {
         let file = segment.file(0);
         assert_eq!((file.path, file.chunk_start, file.chunk_count, file.kind), ("a.rs", 0, 2, Kind::Test));
         assert_eq!(file.stamp, Stamp { modified: Some((7, 9)), bytes: 42 });
+        assert_eq!(file.hash, [7; 16]);
         assert!(!segment.file(1).indexed);
         let chunk = segment.chunk(0);
         assert_eq!((chunk.start_line, chunk.end_line, chunk.imports), (1, 3, false));

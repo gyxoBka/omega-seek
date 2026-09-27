@@ -10,11 +10,12 @@ use crate::access::Access;
 use crate::index::Index;
 use crate::roots::{self, Resolved};
 use crate::search::{Content, Options, render, search};
+use crate::watch::{Changes, Watcher};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // Every session pays for these words before it asks anything: each says what
 // the tool is for, what it replaces and what comes back, once.
@@ -59,12 +60,70 @@ const OPEN_ROOTS: usize = 4;
 /// certainly a mistake. Home is exempt: it is where the agent was started, and
 /// a monorepo that large is still the code being worked on.
 const WIDEST_ROOT: usize = 60_000;
+const SYNC: Duration = Duration::from_millis(300);
+const CHECK_EVERY: Duration = Duration::from_secs(600);
+const GIVE_UP: u32 = 3;
 
 struct Open {
     root: PathBuf,
     /// Taken out while it is being refreshed, which consumes it.
     index: Option<Index>,
     used: Instant,
+    watching: Watching,
+}
+
+type Opened = Result<(Index, Option<Watcher>), String>;
+
+struct Watching {
+    watcher: Option<Watcher>,
+    misses: u32,
+    checked: Instant,
+}
+
+impl Watching {
+    fn start(root: &Path) -> Self {
+        let watcher = if std::env::var_os("OMEGA_NO_WATCH").is_some() { None } else { Watcher::start(root) };
+        Self::from(watcher)
+    }
+
+    fn from(watcher: Option<Watcher>) -> Self {
+        Self {
+            watcher,
+            misses: 0,
+            checked: Instant::now(),
+        }
+    }
+
+    fn refresh(&mut self, root: &Path, index: Index) -> Index {
+        let Some(watcher) = &self.watcher else {
+            return index.refreshed();
+        };
+        match watcher.sync(SYNC) {
+            Some(Changes::Paths(paths)) => {
+                self.misses = 0;
+                let index = index.refreshed_with(&paths);
+                if self.checked.elapsed() < CHECK_EVERY {
+                    return index;
+                }
+                self.checked = Instant::now();
+                let (index, missed) = index.refreshed_full();
+                if missed {
+                    eprintln!("omega: the watcher on {} missed changes; walking the tree from now on", roots::shown(root));
+                    self.watcher = None;
+                }
+                index
+            }
+            Some(Changes::Everything) => {
+                self.misses = 0;
+                index.refreshed()
+            }
+            None => {
+                self.misses += 1;
+                self.watcher = if self.misses < GIVE_UP { Watcher::start(root) } else { None };
+                index.refreshed()
+            }
+        }
+    }
 }
 
 struct Server {
@@ -75,7 +134,7 @@ struct Server {
     /// seconds to answer `initialize`, and a first index of a large repository
     /// takes longer: the first call waits for its words instead, and the
     /// vectors follow while it answers.
-    indexing: Option<Receiver<Result<Index, String>>>,
+    indexing: Option<Receiver<Opened>>,
 }
 
 impl Server {
@@ -84,11 +143,12 @@ impl Server {
         if root == self.home {
             if let Some(indexing) = self.indexing.take() {
                 // A failure is reported to this call; the next one tries again.
-                let index = indexing.recv().map_err(|_| "indexing stopped unexpectedly".to_owned())??;
+                let (index, watcher) = indexing.recv().map_err(|_| "indexing stopped unexpectedly".to_owned())??;
                 self.open.push(Open {
                     root: root.to_path_buf(),
                     index: Some(index),
                     used: Instant::now(),
+                    watching: Watching::from(watcher),
                 });
             }
         }
@@ -101,6 +161,7 @@ impl Server {
                         roots::shown(root)
                     ));
                 }
+                let watching = Watching::start(root);
                 let (mut index, upkeep) = Index::open_lexical(root, self.model.as_deref(), &|_| {})?;
                 if !upkeep.is_idle() {
                     std::thread::spawn(move || upkeep.run(&|_| {}));
@@ -121,17 +182,15 @@ impl Server {
                     root: root.to_path_buf(),
                     index: Some(index),
                     used: Instant::now(),
+                    watching,
                 });
                 self.open.len() - 1
             }
         };
         let open = &mut self.open[position];
         open.used = Instant::now();
-        // Every answer is about the tree as it is on disk now: an agent asks
-        // about the file it has just edited, and a person edits without telling
-        // anyone. Looking costs ~10 ms on a few thousand files, and only files
-        // whose size or time changed are read again.
-        open.index = open.index.take().map(Index::refreshed);
+        let index = open.index.take();
+        open.index = index.map(|index| open.watching.refresh(&open.root, index));
         open.index.as_ref().ok_or_else(|| "the index was lost while refreshing".to_owned())
     }
 }
@@ -147,13 +206,16 @@ pub fn serve(root: &Path, model: Option<&Path>) -> Result<(), String> {
     let (sender, indexing) = channel();
     {
         let (home, model) = (home.clone(), model.map(Path::to_path_buf));
-        std::thread::spawn(move || match Index::open_lexical(&home, model.as_deref(), &|_| {}) {
-            Ok((index, upkeep)) => {
-                let _ = sender.send(Ok(index));
-                let _ = upkeep.run(&|_| {});
-            }
-            Err(error) => {
-                let _ = sender.send(Err(error));
+        std::thread::spawn(move || {
+            let watching = Watching::start(&home);
+            match Index::open_lexical(&home, model.as_deref(), &|_| {}) {
+                Ok((index, upkeep)) => {
+                    let _ = sender.send(Ok((index, watching.watcher)));
+                    let _ = upkeep.run(&|_| {});
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
             }
         });
     }

@@ -70,13 +70,25 @@ literal text in documents too.
 
 ## Index and cache
 
-The disk is the only source of truth: before every answer the tree is walked
-again, in parallel and asking only source files for their size and time, so an
-answer is never older than the call -- whoever edited, an agent a moment ago or
-a person by hand. Files whose size and modification time are unchanged are not
-re-read. A file watcher was not used: its events arrive after the write they
-report, can be dropped, and differ by platform, so the walk would have to stay
-as the guarantee anyway.
+The disk is the only source of truth: an answer is never older than the call
+-- whoever edited, an agent a moment ago or a person by hand. Files whose size
+and modification time are unchanged are not re-read. Finding out what changed
+used to mean walking the whole tree before every answer, ~40 ms on 26,000
+files, most of it the ignore rules. Now the operating system's watcher says
+which paths changed, and only those are walked to, with the same rules on the
+way. A watcher's report arrives after the write it reports, so an edit made
+just before a call might not have been reported yet: every call writes a file
+of its own, a cookie, at the root and waits for its report. Reports come in
+order, so once the cookie's has come, every change made before it has too --
+what watchman does. Whatever cannot be told that way is walked: a watcher that
+could not start (a watch limit, a file system without events), a report of
+lost events, a cookie not back within 300 ms (the watcher is started again, and
+given up after three), a change to `.gitignore`, `.ignore`, `.omegaignore` or
+`.git/info/exclude`, more than 256 paths at once. Every ten minutes a walk
+checks the watcher and replaces it for good if it missed anything. On 26,000
+files a query went from ~55 ms to ~15 ms. On Linux the watcher needs a watch per
+directory, ignored ones included; past the system's limit it does not start,
+and the tree is walked as before. `OMEGA_NO_WATCH=1` walks always.
 
 What each file was read as is kept in a store under the user cache directory
 (`%LOCALAPPDATA%\omega\index`, `$XDG_CACHE_HOME/omega/index`), one file per

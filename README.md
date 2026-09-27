@@ -31,10 +31,11 @@ never reach the index, so they never reach an answer.
 | | |
 |---|---|
 | index 27,000 files | 4 s to answer by words, 15 s with vectors; 0.2 s from the store |
+| look for changes before a query | ~10 ms on 26,000 files: the system reports them, the tree is not walked |
 | pick up an edited file | 25 ms on 2,200 files, automatically, before the next query |
 | query | about 1 ms |
 | answer | 350-600 tokens |
-| binary | 7 MB, no daemon, no database, CPU only |
+| binary | 8 MB, no daemon, no database, CPU only |
 
 ## Quality
 

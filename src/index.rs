@@ -301,8 +301,32 @@ impl Index {
     /// into place, not read out of the segments again. An edit then costs
     /// what walking the tree costs, and little more, whatever its size.
     #[must_use]
-    pub fn refreshed(mut self) -> Self {
+    pub fn refreshed(self) -> Self {
+        self.refreshed_full().0
+    }
+
+    #[must_use]
+    pub fn refreshed_full(self) -> (Self, bool) {
         let walked = walk(&self.root);
+        let changed = walked != self.walked;
+        (self.refreshed_to(walked), changed)
+    }
+
+    #[must_use]
+    pub fn refreshed_with(self, paths: &[PathBuf]) -> Self {
+        if paths.is_empty() {
+            return self;
+        }
+        let found = walk_within(&self.root, paths);
+        let within = |path: &Path| paths.iter().any(|changed| path.starts_with(changed));
+        let mut walked: Walked = self.walked.iter().filter(|(_, path, ..)| !within(path)).cloned().collect();
+        walked.extend(found);
+        walked.sort_by(|a, b| a.0.cmp(&b.0));
+        walked.dedup_by(|a, b| a.0 == b.0);
+        self.refreshed_to(walked)
+    }
+
+    fn refreshed_to(mut self, walked: Walked) -> Self {
         if walked == self.walked {
             return self;
         }
@@ -1082,50 +1106,54 @@ fn stamp_of(meta: &std::fs::Metadata) -> Stamp {
     }
 }
 
+fn walker(root: &Path) -> ignore::WalkBuilder {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder.add_custom_ignore_filename(".omegaignore").require_git(false);
+    builder
+}
+
+fn walked_entry(root: &Path, entry: ignore::DirEntry) -> Option<(String, PathBuf, Kind, Stamp)> {
+    if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        return None;
+    }
+    let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
+    if is_junk(relative) {
+        return None;
+    }
+    let kind = kind_of(relative)?;
+    let meta = entry.metadata().ok()?;
+    if meta.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    Some((relative, entry.into_path(), kind, stamp_of(&meta)))
+}
+
 fn walk(root: &Path) -> Walked {
-    // Every call looks at the tree before it answers, so looking has to be
-    // cheap: directories are read side by side, and a file is asked for its
-    // size and time only once its name says it is source -- on Windows that
-    // question opens the file.
     let found = std::sync::Mutex::new(Walked::new());
-    ignore::WalkBuilder::new(root)
-        .add_custom_ignore_filename(".omegaignore")
-        // A .gitignore says what is not source whether or not the tree has
-        // been `git init`ed yet.
-        .require_git(false)
-        .build_parallel()
-        .run(|| {
-            Box::new(|entry| {
-                let Ok(entry) = entry else {
-                    return ignore::WalkState::Continue;
-                };
-                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                    return ignore::WalkState::Continue;
-                }
-                let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
-                if is_junk(relative) {
-                    return ignore::WalkState::Continue;
-                }
-                let Some(kind) = kind_of(relative) else {
-                    return ignore::WalkState::Continue;
-                };
-                let Ok(meta) = entry.metadata() else {
-                    return ignore::WalkState::Continue;
-                };
-                if meta.len() > MAX_FILE_BYTES {
-                    return ignore::WalkState::Continue;
-                }
-                let stamp = stamp_of(&meta);
-                let relative = relative.to_string_lossy().replace('\\', "/");
+    walker(root).build_parallel().run(|| {
+        Box::new(|entry| {
+            if let Some(kept) = entry.ok().and_then(|entry| walked_entry(root, entry)) {
                 if let Ok(mut found) = found.lock() {
-                    found.push((relative, entry.into_path(), kind, stamp));
+                    found.push(kept);
                 }
-                ignore::WalkState::Continue
-            })
-        });
+            }
+            ignore::WalkState::Continue
+        })
+    });
     let mut walked = found.into_inner().unwrap_or_default();
     walked.sort_by(|a, b| a.0.cmp(&b.0));
     walked
+}
+
+fn walk_within(root: &Path, paths: &[PathBuf]) -> Walked {
+    let wanted = paths.to_vec();
+    let mut builder = walker(root);
+    builder.filter_entry(move |entry| {
+        let path = entry.path();
+        wanted.iter().any(|changed| changed.starts_with(path) || path.starts_with(changed))
+    });
+    builder.build().filter_map(Result::ok).filter_map(|entry| walked_entry(root, entry)).collect()
 }
 
 fn draft_file(tokenizer: &Tokenizer, model: Option<&StaticModel>, relative: &str, text: &str) -> Vec<Draft> {

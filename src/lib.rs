@@ -5,12 +5,14 @@
 //! answered by fusing the two rankings. The answer names lines, not bytes, and
 //! carries the source, so the agent does not have to ask twice.
 
+pub mod access;
 pub mod chunk;
 pub mod index;
 pub mod install;
 pub mod mcp;
 pub mod model;
 pub mod outline;
+pub mod paths;
 pub mod roots;
 pub mod search;
 pub mod store;

@@ -64,14 +64,7 @@ fn is_complete(dir: &Path) -> bool {
 }
 
 fn installed_dir() -> Option<PathBuf> {
-    let data = if cfg!(windows) {
-        PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-    } else if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
-        PathBuf::from(data)
-    } else {
-        PathBuf::from(std::env::var_os("HOME")?).join(".local/share")
-    };
-    Some(data.join("omega").join("models").join(format!("potion-code-16M-v2-{}", &REVISION[..8])))
+    Some(crate::paths::models()?.join(format!("potion-code-16M-v2-{}", &REVISION[..8])))
 }
 
 fn hugging_face_cache() -> Option<PathBuf> {

@@ -6,6 +6,7 @@
 //! in doubt: at connection (`instructions`), when the repository has worktrees
 //! the agent might be in, and whenever a call looked somewhere else.
 
+use crate::access::Access;
 use crate::index::Index;
 use crate::roots::{self, Resolved};
 use crate::search::{Content, Options, render, search};
@@ -47,9 +48,10 @@ whole file, and the line to start reading from.";
 /// Said in full once, where an agent's first call usually goes, and at
 /// connection (`instructions`); the other tools only recall it.
 const ROOT_DESCRIPTION: &str = "Look in this directory instead of omega's repository: the git \
-worktree you work in, a sibling repository (`../backend`), a parent of several (`..`). Absolute, \
-or relative to omega's repository. Omit only when you work in omega's own repository.";
-const ROOT_RECALLED: &str = "Another directory to look in, as in `search`: your git worktree, `../backend`, `..`.";
+worktree you work in, or a directory the user gave this repository access to (`../backend`, a \
+parent of several `..`). Absolute, or relative to omega's repository. Omit only when you work in \
+omega's own repository.";
+const ROOT_RECALLED: &str = "Another directory to look in, as in `search`: your git worktree, or one this repository was given access to.";
 
 /// Roots kept indexed at once; the least recently asked about makes room.
 const OPEN_ROOTS: usize = 4;
@@ -136,6 +138,12 @@ impl Server {
 
 pub fn serve(root: &Path, model: Option<&Path>) -> Result<(), String> {
     let home = roots::clean(&root.canonicalize().map_err(|error| format!("{}: {error}", root.display()))?);
+    // The stores of repositories no longer worked on go, out of the way.
+    std::thread::spawn(|| {
+        if let Some(dir) = crate::paths::stores() {
+            let _ = crate::store::prune(&dir, crate::store::ABANDONED);
+        }
+    });
     let (sender, indexing) = channel();
     {
         let (home, model) = (home.clone(), model.map(Path::to_path_buf));
@@ -201,8 +209,9 @@ fn instructions(home: &Path) -> String {
     format!(
         "omega is indexing {home}. Calls without `root` search this directory only. If your working \
          directory is a different checkout -- a git worktree, a sibling repository -- pass `root` with \
-         that directory, or you will be answered about code you are not editing. `outline` with \
-         `root: \"..\"` lists the repositories beside this one.",
+         that directory, or you will be answered about code you are not editing. Directories outside \
+         this repository are readable only once the user has given it access to them (`omega access \
+         add`); `outline` with `root: \"..\"` says which are.",
         home = roots::shown(home)
     )
 }
@@ -287,6 +296,17 @@ fn call(server: &mut Server, params: &Value) -> Value {
         Ok(resolved) => resolved,
         Err(reason) => return failure(reason),
     };
+    // Refused before anything is read or indexed. Settings that cannot be
+    // read give nothing, rather than stopping the server.
+    if resolved.elsewhere {
+        let access = Access::load().unwrap_or_default();
+        if !access.allows(&server.home, &resolved.root) {
+            let refusal = access.refusal(&server.home, &resolved.root);
+            // `outline("", root="..")` is how an agent asks what is next
+            // door: what it may read is the answer, not an error.
+            return if tool == "outline" { text(refusal) } else { failure(refusal) };
+        }
+    }
     let home = server.home.clone();
     let index = match server.index(&resolved.root) {
         Ok(index) => index,

@@ -85,8 +85,8 @@ more, shows what it will write where, and asks before writing: the MCP server
 entry, a short block of instructions, and a sub-agent. Running it again changes
 nothing; `omega uninstall` restores every file byte for byte.
 
-**3. Restart the agent.** There is nothing to index by hand: the server indexes
-the repository it is started in and follows your edits. In a large repository
+**3. Restart the agent.** There is nothing to set up per repository: the server
+indexes the repository it is started in and follows your edits. In a large repository
 -- tens of thousands of files -- `omega index` run there once beforehand spares
 the first session the wait; an interrupted index resumes where it stopped.
 
@@ -104,14 +104,33 @@ omega index            # the whole index now, before a session needs it
 ## Other repositories and worktrees
 
 omega answers about the repository it was started in. Every tool also takes a
-`root`, so an agent can look next door without leaving its own:
+`root`, so an agent can look into a git worktree of its repository, or into a
+directory you have given that repository access to:
 
 ```
-search("order payload validation", root="../backend")    # a sibling repository
-usages("/api/orders", root="..")                         # the whole workspace, as one tree
-outline("", root="..")                                   # which repositories are next door
-search("retry policy", root="/work/app-wt/fix-auth")     # a git worktree
+search("retry policy", root="/work/app-wt/fix-auth")     # a git worktree: always readable
+search("order payload validation", root="../backend")    # a sibling repository, once given
+usages("/api/orders", root="..")                         # a parent given: all of it, as one tree
+outline("", root="..")                                   # what is readable from here
 ```
+
+A harness usually keeps an agent inside its repository, and an MCP server is a
+process the harness does not restrain, so omega keeps to the same line: the
+repository and its worktrees, and beyond them only what you give. Access is
+given to the repository you run the command in, and every worktree of it has it
+too; agents started anywhere else do not:
+
+```sh
+cd ~/work/app
+omega access add ../backend     # agents started in app may read backend
+omega access                    # what app may read; pick any to take back
+omega access list --all         # every repository and what it was given
+```
+
+It is kept in omega's settings, not in the repository, where an agent could
+write it for itself. A call outside is refused before anything is read or
+indexed, and the refusal names the command to run. The command line is not
+restrained: an agent reaches it through a shell, which the harness governs.
 
 A directory inside a repository means that repository, narrowed to the
 directory; an absolute path in any argument implies its repository without a

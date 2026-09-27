@@ -90,6 +90,41 @@ pub fn resolve(home: &Path, root: Option<&str>, path: Option<&str>) -> Result<Re
     })
 }
 
+/// The git directory every checkout of a repository shares: the main
+/// checkout's `.git`, which a linked worktree's `.git` file leads to through
+/// its `commondir`. None for a directory that is not a checkout.
+#[must_use]
+pub fn common_git_dir(checkout: &Path) -> Option<PathBuf> {
+    let dot = checkout.join(".git");
+    if dot.is_dir() {
+        return Some(clean(&dot.canonicalize().ok()?));
+    }
+    let pointer = std::fs::read_to_string(&dot).ok()?;
+    let gitdir = pointer.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
+    let gitdir = checkout.join(gitdir);
+    let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+        Ok(common) => gitdir.join(common.trim()),
+        // A submodule's git directory is its own.
+        Err(_) => gitdir,
+    };
+    Some(clean(&common.canonicalize().ok()?))
+}
+
+/// The main checkout of the repository `directory` is in: what access is
+/// given to, so that every worktree of a repository has the same. A directory
+/// under no checkout stands for itself.
+#[must_use]
+pub fn repository(directory: &Path) -> PathBuf {
+    let (top, _) = checkout_of(directory);
+    if !top.join(".git").exists() {
+        return directory.to_path_buf();
+    }
+    match common_git_dir(&top) {
+        Some(common) if common.file_name().is_some_and(|name| name == ".git") => parent_of(&common),
+        _ => top,
+    }
+}
+
 /// The checkout `directory` belongs to -- the nearest ancestor holding `.git`,
 /// as a directory or as a worktree's file -- and where inside it `directory`
 /// sits. A directory under no checkout, such as one holding several
@@ -126,7 +161,7 @@ fn parent_of(path: &Path) -> PathBuf {
 }
 
 /// A drive, a home directory, or the directory above one would be read whole.
-fn refuse_if_too_wide(root: &Path) -> Result<(), String> {
+pub fn refuse_if_too_wide(root: &Path) -> Result<(), String> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
     let is_home = home.as_deref().is_some_and(|home| clean(home) == root || clean(home).starts_with(root));
     let is_drive = root.parent().is_none() || root.components().filter(|part| matches!(part, Component::Normal(_))).count() == 0;

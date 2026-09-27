@@ -10,7 +10,7 @@ This repository is indexed by the `omega` MCP server. Use it FIRST to find code.
 | where a message, route, key or task id is written | `usages("connection refused")`, `usages("/api/users")`; documentation by its words: `search(..., content="docs")` |
 | a regular expression | `grep("func \w+Handler\(")` -- not the built-in grep/rg, which also walk dependencies and build output |
 | what a file, directory or document holds | `outline("src/auth")`, `outline("docs/DESIGN.md")` -- then read only the lines you need |
-| code in another repository of the workspace | `search("order payload validation", root="../backend")`; `outline("", root="..")` lists them |
+| code in another repository | `search("payload validation", root="../backend")`, once given access; `outline("", root="..")` lists what is |
 | anything, from a git worktree or a checkout other than omega's | add `root="<that directory>"` -- else the answer is about code you are not editing |
 
 - Go straight to the `path:start-end` returned. Do not grep for what omega already gave you.

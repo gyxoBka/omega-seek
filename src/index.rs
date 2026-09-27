@@ -223,6 +223,7 @@ impl Index {
         let mut segments = opened.map_err(|_| "reading the index panicked")?.segments;
         if let Some(store) = &store {
             forget_legacy(store);
+            store::touch(store);
         }
 
         let tokenizer = Tokenizer::new();
@@ -1049,14 +1050,7 @@ fn read_file(
 
 /// The user's cache of stores.
 fn cache_dir() -> Option<PathBuf> {
-    let base = if cfg!(windows) {
-        PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
-    } else if let Some(base) = std::env::var_os("XDG_CACHE_HOME") {
-        PathBuf::from(base)
-    } else {
-        PathBuf::from(std::env::var_os("HOME")?).join(".cache")
-    };
-    Some(base.join("omega").join("index"))
+    crate::paths::stores()
 }
 
 /// One store per repository and model: vectors from one model mean nothing

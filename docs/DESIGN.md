@@ -137,6 +137,31 @@ and a server that exits at start shows only as "failed". It is indexed in the
 background from the start, so `initialize` is answered at once, and the first
 call waits for its words (see Index and cache).
 
+What a call may name is limited to what the agent could read anyway. A
+harness usually keeps an agent inside the repository it was started in; the
+MCP server is a process of its own that the harness does not restrain, and
+without a rule of ours a `root` would read and index any directory on the
+machine. The home directory, everything under it and every checkout of the same
+repository -- found by the git directory they share, a worktree's `.git` file
+leading to it through `commondir` -- are readable; anything else only once the
+user has run `omega access add <dir>` in that repository. Access is kept in
+omega's settings, keyed by the main checkout so that every worktree has what
+the repository has, and not in the repository, where the agent could write it.
+It is given to one repository, not to every agent on the machine: the smallest
+grant that does the job, as `additionalDirectories` is in a Claude Code
+project. Nothing gives it as a side effect -- not `install`, run from wherever,
+nor `index`. A refused call is answered before anything is read or indexed,
+with the command that would allow it and what is readable instead;
+`outline("", root="..")`, which is how an agent asks what is next door, gets
+that list as its answer. The command line is not restrained: an agent reaches
+it through a shell, which the harness already governs. The settings are read
+on every call, so access given takes effect without a restart, and settings
+that cannot be read give nothing rather than stopping the server.
+
+A store not opened for a month -- its time is set on every opening -- belongs to
+a repository no longer worked on, and goes at the next server start, as does
+what a crash left aside; `omega index --prune` does it at once.
+
 No harness tells an MCP server where its agent currently is -- roots are
 deprecated in the protocol, and hooks would tie this to one harness -- so the
 server tells the agent instead, and only when it matters: `instructions` at

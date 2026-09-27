@@ -947,6 +947,47 @@ pub fn replace(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
     result
 }
 
+/// Marks the store as used now: its time says when it was last opened, not
+/// last written, which is what deciding it is abandoned needs. Only the time
+/// changes, never a byte.
+pub fn touch(path: &Path) {
+    if let Ok(file) = options().write(true).open(path) {
+        let _ = file.set_modified(std::time::SystemTime::now());
+    }
+}
+
+/// A store not opened for this long belongs to a repository no longer worked on.
+pub const ABANDONED: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+/// A file written aside and not renamed within this long was left by a crash.
+const LEFT_ASIDE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Removes from `dir` the stores not opened within `abandoned`, earlier
+/// releases' caches alike, and files left aside by a crash; nothing else, the
+/// directory being omega's but its neighbours not. How many files, and bytes.
+#[must_use]
+pub fn prune(dir: &Path, abandoned: std::time::Duration) -> (usize, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
+    let now = std::time::SystemTime::now();
+    let mut removed = (0, 0);
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let limit = if name.ends_with(".idx") || name.ends_with(".bin") {
+            abandoned
+        } else if name.ends_with(".tmp") {
+            LEFT_ASIDE
+        } else {
+            continue;
+        };
+        let Ok(meta) = entry.metadata() else { continue };
+        let age = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
+        if meta.is_file() && age > limit && std::fs::remove_file(entry.path()).is_ok() {
+            removed.0 += 1;
+            removed.1 += meta.len();
+        }
+    }
+    removed
+}
+
 fn aside(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{}.tmp", std::process::id()));

@@ -270,7 +270,9 @@ pub fn run(request: Request, keep_data: bool) -> Result<(), String> {
         }
     }
     if let Some(foreign) = &found.foreign_binary {
-        println!("\n  The binary {} was not put there by omega's installer: remove it with what installed it (`cargo uninstall omega-seek`).", foreign.display());
+        let built = foreign.components().any(|part| part.as_os_str() == "target");
+        let how = if built { "it is a build in a source checkout, which `cargo clean` removes" } else { "remove it with what installed it (`cargo uninstall omega-seek`)" };
+        println!("\n  The binary {} was not put there by omega's installer: {how}.", foreign.display());
     }
     for warning in warnings(&found, &parts, &left) {
         println!("\n  Note: {warning}");

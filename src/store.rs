@@ -758,14 +758,17 @@ impl Opened {
     }
 }
 
+#[cfg(windows)]
 fn options() -> OpenOptions {
+    use std::os::windows::fs::OpenOptionsExt;
     let mut options = OpenOptions::new();
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(0x1 | 0x2 | 0x4);
-    }
+    options.share_mode(0x1 | 0x2 | 0x4);
     options
+}
+
+#[cfg(not(windows))]
+fn options() -> OpenOptions {
+    OpenOptions::new()
 }
 
 #[allow(unsafe_code)]

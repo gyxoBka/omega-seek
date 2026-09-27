@@ -107,7 +107,7 @@ fn uninstall_takes_out_what_was_chosen_and_nothing_else() {
     let (ok, said) = omega(&dir, &["uninstall", "--yes", "--keep-data"]);
     assert!(ok && !claude_has_omega(&dir), "{said}");
     assert!(dir.join("cache/omega/index/0123.idx").is_file() && dir.join("config/omega/config.json").is_file());
-    assert!(said.contains("cargo uninstall"), "a binary under target/ is not ours to remove: {said}");
+    assert!(said.contains("cargo clean"), "a binary under target/ is not ours to remove: {said}");
 
     let (ok, said) = omega(&dir, &["uninstall", "--yes"]);
     assert!(ok, "{said}");

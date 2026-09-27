@@ -255,6 +255,12 @@ impl Engine {
         slots
             .iter()
             .map(|slot| match slot.state.try_lock() {
+                Ok(state) if state.index.is_none() => Opening {
+                    root: slot.root.clone(),
+                    files: 0,
+                    chunks: 0,
+                    busy: true,
+                },
                 Ok(state) => Opening {
                     root: slot.root.clone(),
                     files: state.index.as_ref().map_or(0, |index| index.files.len()),

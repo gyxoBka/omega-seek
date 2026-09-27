@@ -25,6 +25,7 @@ fn identity(model: Option<&Path>) -> String {
     hasher.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(windows)]
 fn user() -> String {
     let name = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default();
     name.chars().filter(char::is_ascii_alphanumeric).collect()

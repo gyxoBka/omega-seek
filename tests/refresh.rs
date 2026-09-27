@@ -425,3 +425,18 @@ fn a_worktree_reads_only_the_files_its_main_checkout_does_not_hold_as_they_are()
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&cache);
 }
+
+#[test]
+fn a_file_rewritten_within_the_same_tick_at_the_same_size_is_read_again() {
+    let root = scratch("racy");
+    let file = root.join("alpha.rs");
+    std::fs::write(&file, "fn parse_invoice() {\n    todo!()\n}\n").unwrap();
+    let written = std::fs::metadata(&file).unwrap().modified().unwrap();
+    let index = Index::build(&root, None).unwrap();
+    assert_eq!(first_path(&index, "parse_invoice").as_deref(), Some("alpha.rs"));
+    std::fs::write(&file, "fn settle_ledger() {\n    todo!()\n}\n").unwrap();
+    std::fs::File::options().write(true).open(&file).unwrap().set_modified(written).unwrap();
+    let index = index.refreshed();
+    assert_eq!(first_path(&index, "settle_ledger").as_deref(), Some("alpha.rs"));
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
@@ -52,6 +53,7 @@ pub struct Index {
     headings: OnceLock<HashMap<String, Vec<(u32, u32)>>>,
     dirty: BTreeMap<String, CachedFile>,
     walked: Walked,
+    walked_at: SystemTime,
     store: Option<PathBuf>,
 }
 
@@ -79,6 +81,7 @@ const NAME_WEIGHT: f32 = 3.0;
 const PATH_WEIGHT: f32 = 2.0;
 const _: () = assert!(NAME_WEIGHT as u32 as f32 == NAME_WEIGHT && PATH_WEIGHT as u32 as f32 == PATH_WEIGHT);
 const MAX_FILE_BYTES: u64 = 1 << 20;
+const RACY: Duration = Duration::from_secs(2);
 const MAX_NAMES: usize = 96;
 const BATCH_FILES: usize = 2048;
 const PERSIST_DIRTY: usize = 256;
@@ -166,10 +169,11 @@ impl Index {
                     .transpose()
             });
             let opened = scope.spawn(|| store.as_deref().map(store::open).unwrap_or_default());
-            let walked = walk(root);
+            let walked = (SystemTime::now(), walk(root));
             (model.join(), opened.join(), walked)
         });
         let model = model.map_err(|_| "loading the model panicked")??.map(Arc::new);
+        let (walked_at, walked) = walked;
         let mut segments = opened.map_err(|_| "reading the index panicked")?.segments;
         if let Some(store) = &store {
             forget_legacy(store);
@@ -248,6 +252,7 @@ impl Index {
             headings: OnceLock::new(),
             dirty: BTreeMap::new(),
             walked,
+            walked_at,
             store,
         };
         index.materialize();
@@ -262,9 +267,10 @@ impl Index {
 
     #[must_use]
     pub fn refreshed_full(self) -> (Self, bool) {
+        let at = SystemTime::now();
         let walked = walk(&self.root);
         let changed = walked != self.walked;
-        (self.refreshed_to(walked), changed)
+        (self.refreshed_to(walked, at, &[]), changed)
     }
 
     #[must_use]
@@ -272,20 +278,57 @@ impl Index {
         if paths.is_empty() {
             return self;
         }
+        let at = SystemTime::now();
         let found = walk_within(&self.root, paths);
         let within = |path: &Path| paths.iter().any(|changed| path.starts_with(changed));
         let mut walked: Walked = self.walked.iter().filter(|(_, path, ..)| !within(path)).cloned().collect();
         walked.extend(found);
         walked.sort_by(|a, b| a.0.cmp(&b.0));
         walked.dedup_by(|a, b| a.0 == b.0);
-        self.refreshed_to(walked)
+        self.refreshed_to(walked, at, paths)
     }
 
-    fn refreshed_to(mut self, walked: Walked) -> Self {
-        if walked == self.walked {
+    fn stored_hash(&self, relative: &str) -> Option<[u8; 16]> {
+        let file = self.files.binary_search_by(|entry| entry.path.as_str().cmp(relative)).ok()?;
+        let (part, local) = self.sources[file];
+        let segment = self.segments.iter().chain(self.delta.iter()).nth(part as usize)?;
+        Some(segment.file(local as usize).hash)
+    }
+
+    fn racy(&self, walked: &Walked, reported: &[PathBuf]) -> HashSet<String> {
+        let since = self.walked_at.checked_sub(RACY).unwrap_or(UNIX_EPOCH);
+        let before: HashMap<&str, &Stamp> = self.walked.iter().map(|(relative, _, _, stamp)| (relative.as_str(), stamp)).collect();
+        walked
+            .par_iter()
+            .filter_map(|(relative, path, _, stamp)| {
+                if before.get(relative.as_str()) != Some(&stamp) {
+                    return None;
+                }
+                let recent = stamp.modified.is_none_or(|(seconds, nanos)| UNIX_EPOCH + Duration::new(seconds, nanos) >= since);
+                if !recent && !reported.contains(path) {
+                    return None;
+                }
+                let stored = self.stored_hash(relative)?;
+                let now = content_hash(&std::fs::read(path).ok()?);
+                (now != stored).then(|| relative.clone())
+            })
+            .collect()
+    }
+
+    fn refreshed_to(mut self, walked: Walked, at: SystemTime, reported: &[PathBuf]) -> Self {
+        let racy = self.racy(&walked, reported);
+        if walked == self.walked && racy.is_empty() {
+            self.walked_at = at;
             return self;
         }
-        let (changed, gone) = differences(&self.walked, &walked);
+        let (mut changed, mut gone) = differences(&self.walked, &walked);
+        for (position, (relative, ..)) in walked.iter().enumerate() {
+            if racy.contains(relative) && gone.insert(relative.clone()) {
+                changed.push(position);
+            }
+        }
+        changed.sort_unstable();
+        self.walked_at = at;
         self.dirty.retain(|relative, _| !gone.contains(relative.as_str()));
         let model = self.model.as_deref();
         let tokenizer = &self.tokenizer;

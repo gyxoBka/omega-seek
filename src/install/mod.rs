@@ -8,6 +8,7 @@
 
 pub mod agents;
 pub mod config;
+pub mod remove;
 
 use agents::{Agent, Dirs, McpShape, SubagentShape};
 use config::Action;
@@ -42,7 +43,7 @@ impl Integration {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Mcp => "MCP server",
             Self::Instructions => "Instructions",
@@ -58,7 +59,7 @@ impl Integration {
         }
     }
 
-    fn target(self, agent: &Agent) -> Option<&Path> {
+    pub(crate) fn target(self, agent: &Agent) -> Option<&Path> {
         match self {
             Self::Mcp => agent.mcp.as_ref().map(|(path, ..)| path.as_path()),
             Self::Instructions => agent.instructions.as_deref(),
@@ -296,7 +297,7 @@ fn subagent(shape: SubagentShape) -> String {
     }
 }
 
-fn describe(action: &Action) -> String {
+pub(crate) fn describe(action: &Action) -> String {
     match action {
         Action::Created => "created".into(),
         Action::Updated => "updated".into(),
@@ -308,14 +309,14 @@ fn describe(action: &Action) -> String {
     }
 }
 
-fn display(dirs: &Dirs, path: &Path) -> String {
+pub(crate) fn display(dirs: &Dirs, path: &Path) -> String {
     match path.strip_prefix(&dirs.home) {
         Ok(relative) => format!("~/{}", relative.display()).replace('\\', "/"),
         Err(_) => path.display().to_string(),
     }
 }
 
-fn select(prompt: &str, labels: Vec<String>, ticked: &[usize]) -> Result<Vec<usize>, String> {
+pub(crate) fn select(prompt: &str, labels: Vec<String>, ticked: &[usize]) -> Result<Vec<usize>, String> {
     let picked = inquire::MultiSelect::new(prompt, labels)
         .with_default(ticked)
         .with_page_size(15)

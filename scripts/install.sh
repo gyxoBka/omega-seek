@@ -54,7 +54,13 @@ profiles() {
 
 if [ "$UNINSTALL" -eq 1 ]; then
     printf '\n  omega uninstall\n\n'
-    if [ -x "$EXE" ]; then "$EXE" uninstall --yes; fi
+    if [ -x "$EXE" ]; then
+        if [ "$PURGE" -eq 1 ]; then
+            "$EXE" uninstall --yes && exit 0
+        else
+            "$EXE" uninstall --yes --keep-data && exit 0
+        fi
+    fi
     if [ "$SET_PATH" -eq 1 ]; then
         profiles | while read -r profile; do
             if [ -f "$profile" ] && grep -qF "$MARK" "$profile"; then

@@ -166,6 +166,19 @@ files, `*.min.*`, source maps and files over 1 MB are always left out.
 
 ## Removing it
 
+```sh
+omega uninstall
+```
+
+It lists what omega left on this machine -- the integrations in each agent, the
+index caches, the model, the settings, the PATH entry, the binary -- with where
+each is and how large, all ticked; untick what should stay, and it says what a
+choice would leave broken before it removes anything. `--yes` removes everything
+without asking, `--keep-data` keeps the model, the caches and the settings for
+a reinstall, `--agents` / `--integrations` take omega out of agents only, and
+`--dry-run` shows the plan. If the binary is gone already, the installer scripts
+do the same:
+
 ```powershell
 # Windows
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.ps1))) -Uninstall -Purge
@@ -176,8 +189,7 @@ files, `*.min.*`, source maps and files over 1 MB are always left out.
 curl -fsSL https://raw.githubusercontent.com/gyxoBka/omega-seek/master/scripts/install.sh | sh -s -- --uninstall --purge
 ```
 
-Takes omega out of the agents, then removes the binary, the PATH entry, the
-model and the index cache.
+Without `-Purge` / `--purge` the model, the caches and the settings stay.
 
 ## Licence
 

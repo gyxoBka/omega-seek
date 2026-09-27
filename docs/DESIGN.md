@@ -236,6 +236,18 @@ config with comments is left alone and the entry is printed to add by hand.
 `--agents claude,codex --integrations mcp,instructions --yes` makes it
 scriptable; `OMEGA_HOME=<dir>` rehearses it against a scratch home.
 
+`omega uninstall` removes everything omega put on the machine, not only what
+`install` wrote into agents: every place omega writes is named in one module,
+`paths`, which the uninstaller reads the same list from. It shows only what is
+there, all ticked, and warns of a choice that leaves something broken -- an
+agent still starting a binary about to go. The daemon is stopped first when
+the binary or the data go, since on Windows it holds them. A running binary
+cannot be deleted on Windows, so it steps aside as `omega update` has it do and
+a detached `cmd` deletes it once the process has ended; one not put there by
+omega's installer, as `cargo install` does, is left with a word on how to
+remove it. The installer scripts' `-Uninstall` / `--uninstall` call it, and
+keep their own steps for a machine where the binary is already gone.
+
 `omega update` brings the installed binary to the latest release without an
 installer: the release's tag is read off where GitHub redirects
 `releases/latest` to, which needs no API call and no token; a release carries

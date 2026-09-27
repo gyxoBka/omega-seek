@@ -169,8 +169,12 @@ fn spawn(model: Option<&Path>) -> std::io::Result<()> {
         Some(dir) => command.arg("--model").arg(dir),
         None => command.arg("--no-model"),
     };
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     let place = crate::paths::state().filter(|dir| std::fs::create_dir_all(dir).is_ok()).unwrap_or_else(std::env::temp_dir);
+    spawn_detached(command, &place)
+}
+
+pub fn spawn_detached(mut command: Command, place: &Path) -> std::io::Result<()> {
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     command.current_dir(place);
     #[cfg(windows)]
     {

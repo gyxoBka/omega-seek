@@ -15,7 +15,8 @@ omega mcp [--root DIR]
 omega daemon [status | start | stop [--all] | restart | enable | disable]
 omega model install
 omega update [--check]
-omega install|uninstall [--agents claude,codex,...] [--integrations mcp,instructions,subagent] [--yes] [--dry-run] [--refresh]
+omega install [--agents claude,codex,...] [--integrations mcp,instructions,subagent] [--yes] [--dry-run] [--refresh]
+omega uninstall [--agents ...] [--integrations ...] [--keep-data] [--yes] [--dry-run]
 
 The static model is read from --model DIR, else OMEGA_MODEL, else where
 `model install` put it, else the Hugging Face cache; without one, search is
@@ -44,6 +45,7 @@ fn run() -> Result<(), String> {
     let mut eval_hits = None;
     let mut request = omega::install::Request::default();
     let mut all = false;
+    let mut keep_data = false;
     let mut prune = false;
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value"));
@@ -78,6 +80,7 @@ fn run() -> Result<(), String> {
             "--refresh" => request.refresh = true,
             "--no-model" => model = Some(PathBuf::new()),
             "--all" => all = true,
+            "--keep-data" => keep_data = true,
             "--prune" => prune = true,
             _ => positional.push(arg),
         }
@@ -116,7 +119,7 @@ fn run() -> Result<(), String> {
         }
         "update" => omega::update::run(positional.iter().any(|arg| arg == "--check")),
         "install" => omega::install::run(omega::install::Mode::Install, request),
-        "uninstall" => omega::install::run(omega::install::Mode::Uninstall, request),
+        "uninstall" => omega::install::remove::run(request, keep_data),
         "outline" => {
             let index = Index::open(&root, None)?;
             print!("{}", omega::outline::outline(&index, &positional.join(" ")));

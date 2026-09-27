@@ -63,7 +63,10 @@ function Remove-FromUserPath([string]$dir) {
 if ($Uninstall) {
     Write-Host "`n  omega uninstall`n"
     if (Test-Path $Exe) {
-        & $Exe uninstall --yes
+        $arguments = @('uninstall', '--yes')
+        if (-not $Purge) { $arguments += '--keep-data' }
+        & $Exe @arguments
+        if ($LASTEXITCODE -eq 0) { return }
     }
     if (-not $NoPath) { Remove-FromUserPath $InstallDir }
     # Only the files omega put there; the directory goes when nothing else is in it.
